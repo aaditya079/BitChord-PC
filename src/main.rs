@@ -2,6 +2,7 @@
 
 mod appicon;
 mod apple;
+mod album_logo;
 mod artist_signature;
 mod fullscreen;
 mod proxy;

@@ -679,7 +679,22 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             ui.set_max_width(ui.available_width().min(760.0));
             ui.add_space(24.0);
             ui.label(RichText::new(if is_album { "ALBUM" } else { "PLAYLIST" }).font(theme::semibold(12.0)).color(theme::text_dim()));
-            ui.label(RichText::new(&c.title).font(theme::bold(40.0)).color(theme::text()));
+            let has_custom_logo = crate::album_logo::has_logo(app.backend.data_dir(), id);
+            let mut drawn_logo = false;
+            if has_custom_logo {
+                let logo_p = crate::album_logo::logo_path(app.backend.data_dir(), id);
+                let uri = format!("file://{}", logo_p.to_string_lossy().replace('\\', "/"));
+                let max_w = ui.available_width().min(380.0);
+                let img = egui::Image::new(&uri)
+                    .max_height(64.0)
+                    .max_width(max_w)
+                    .fit_to_original_size(1.0);
+                ui.add(img);
+                drawn_logo = true;
+            }
+            if !drawn_logo {
+                ui.label(RichText::new(&c.title).font(theme::bold(40.0)).color(theme::text()));
+            }
             ui.add_space(2.0);
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             widgets::linked_text(ui, r.min, &c.byline(), &c.artists, theme::regular(15.0), theme::text_dim(), r.width(), acts);
@@ -769,6 +784,24 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
                     }
                     if widgets::menu_action(ui, Some(icon::LINK), "Share") {
                         acts.push(Action::Share(target.clone()));
+                    }
+                    ui.separator();
+                    let has_custom_logo = crate::album_logo::has_logo(app.backend.data_dir(), id);
+                    if widgets::menu_action(ui, Some(icon::SPARKLES), "Set custom title logo (PNG)...") {
+                        let data_dir = app.backend.data_dir().to_owned();
+                        let target_id = id.to_owned();
+                        std::thread::spawn(move || {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .set_title("Select PNG Title Logo")
+                                .add_filter("PNG Image", &["png"])
+                                .pick_file()
+                            {
+                                let _ = crate::album_logo::save_logo(&data_dir, &target_id, &file);
+                            }
+                        });
+                    }
+                    if has_custom_logo && widgets::menu_action(ui, Some(icon::TRASH_2), "Remove title logo") {
+                        crate::album_logo::remove_logo(app.backend.data_dir(), id);
                     }
                     ui.add_space(3.0);
                 });
