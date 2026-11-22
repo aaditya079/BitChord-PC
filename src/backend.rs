@@ -1466,19 +1466,29 @@ impl Backend {
         let opus = if best { stream::Format::Aac } else { stream::Format::Opus };
         match self.resolve_from(Source::VisionOs, video_id, opus, None).await {
             Ok(s) => Ok((Source::VisionOs, s)),
-            // Age-restricted or Premium-only: only signed-in web players get it.
-            Err(e) if needs_account(&e) => {
-                log::info!("{video_id} needs a signed-in player ({e:#})");
-                let session = self.api.account().ok_or_else(|| anyhow::anyhow!("sign in to play this song"))?;
-                if self.is_premium(&session).await {
-                    match self.resolve_from(Source::WebMusic, video_id, stream::Format::Aac, None).await {
-                        Ok(s) => return Ok((Source::WebMusic, s)),
-                        Err(e) => log::warn!("web music player failed ({e:#}); using yt-dlp"),
+            Err(e) => {
+                log::info!("{video_id} visionOS stream unavailable ({e:#}); attempting WebMusic fallback");
+                // 1. If signed in, try signed-in WebMusic session
+                if let Some(session) = self.api.account() {
+                    if self.is_premium(&session).await {
+                        if let Ok(s) = self.resolve_from(Source::WebMusic, video_id, stream::Format::Aac, None).await {
+                            return Ok((Source::WebMusic, s));
+                        }
                     }
                 }
-                Ok((Source::YtDlp, self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac, None).await?))
+                // 2. Try anonymous WebMusic resolver (unscrambles cipher/throttling for kids/restricted tracks)
+                match self.resolve_from(Source::WebMusic, video_id, stream::Format::Aac, None).await {
+                    Ok(s) => return Ok((Source::WebMusic, s)),
+                    Err(web_err) => log::warn!("{video_id} WebMusic fallback failed ({web_err:#})"),
+                }
+                // 3. If account is available and track is age-restricted / needs yt-dlp
+                if self.api.account().is_some() {
+                    if let Ok(s) = self.resolve_from(Source::YtDlp, video_id, stream::Format::Aac, None).await {
+                        return Ok((Source::YtDlp, s));
+                    }
+                }
+                Err(e)
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -1499,8 +1509,14 @@ impl Backend {
         Ok(match source {
             Source::VisionOs => plain(self.visionos_stream(video_id, format == stream::Format::Opus).await?, innertube::UA),
             Source::WebMusic => {
-                let session = self.api.account().ok_or_else(|| anyhow::anyhow!("signed out"))?;
-                plain(session.audio_stream(&self.http(), &self.jsc, video_id).await?, webmusic::UA)
+                if let Some(session) = self.api.account() {
+                    match session.audio_stream(&self.http(), &self.jsc, video_id).await {
+                        Ok(s) => plain(s, webmusic::UA),
+                        Err(_) => plain(webmusic::audio_stream_anon(&self.http(), &self.jsc, video_id).await?, webmusic::UA),
+                    }
+                } else {
+                    plain(webmusic::audio_stream_anon(&self.http(), &self.jsc, video_id).await?, webmusic::UA)
+                }
             }
             Source::YtDlp => {
                 let session = self.api.account().ok_or_else(|| anyhow::anyhow!("sign in to play this song"))?;
