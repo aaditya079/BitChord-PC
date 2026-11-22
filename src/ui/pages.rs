@@ -1740,6 +1740,12 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
+        setting_row(ui, "Sync Keyboard & Ambient RGB", Some("Dynamically illuminates your gaming laptop keyboard (ASUS TUF / ROG) and RGB peripherals (OpenRGB / SteelSeries) with the album art's dominant color."), |ui| {
+            if toggle(ui, &mut app.sync_rgb, "Sync Keyboard & Ambient RGB").changed() && app.sync_rgb {
+                crate::lighting::sync_ambient_rgb(app.accent_color());
+            }
+        });
+        divider(ui);
         setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this PC works, e.g. one made for your language."), |ui| {
             if let Some(name) = font_picker(ui) {
                 theme::set_font_choice(&name);

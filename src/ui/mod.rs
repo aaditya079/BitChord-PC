@@ -437,6 +437,7 @@ pub struct App {
     /// Apple's moving album art. Off unless asked for: a sleeve needs a decoder, a
     /// frame and a texture each, and they add up while the music plays.
     animated_artwork: bool,
+    pub sync_rgb: bool,
     /// Skip the parts of music videos SponsorBlock marks as not music.
     sponsorblock: bool,
     /// Crossfade between songs, and over how many seconds.
@@ -783,6 +784,7 @@ impl App {
             anim_bg: get("anim_bg").is_none_or(|v| v == "1"),
             reactive_bg: get("reactive_bg").is_none_or(|v| v == "1"),
             animated_artwork: get("animated_artwork").is_some_and(|v| v == "1"),
+            sync_rgb: get("sync_rgb").is_some_and(|v| v == "1"),
             sponsorblock: get("sponsorblock").is_some_and(|v| v == "1"),
             crossfade: get("crossfade").is_some_and(|v| v == "1"),
             automix: get("automix").is_some_and(|v| v == "1"),
@@ -1560,6 +1562,7 @@ impl eframe::App for App {
         storage.set_string("anim_bg", b(self.anim_bg));
         storage.set_string("reactive_bg", b(self.reactive_bg));
         storage.set_string("animated_artwork", b(self.animated_artwork));
+        storage.set_string("sync_rgb", b(self.sync_rgb));
         storage.set_string("signature_api", self.signature_api.clone());
         storage.set_string("hires_source", self.hires_sources.join("\n"));
         storage.set_string("prefer_atmos", b(self.prefer_atmos));
