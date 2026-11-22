@@ -310,6 +310,7 @@ pub struct App {
     recent_searches: Vec<RecentSearch>,
     /// A search whose results are on screen, waiting for the first result to be opened.
     search_pending: bool,
+    pub search_library_only: bool,
     suggestions: (String, Vec<crate::ytm::Suggestion>),
     /// Up to 32 query results, oldest first, scoped to the current suggestion round.
     suggest_cache: VecDeque<(String, Vec<crate::ytm::Suggestion>)>,
@@ -668,6 +669,7 @@ impl App {
             search_synced: String::new(),
             recent_searches: get("recent_searches").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             search_pending: false,
+            search_library_only: false,
             suggestions: Default::default(),
             suggest_cache: VecDeque::new(),
             suggest_sel: None,
@@ -972,7 +974,7 @@ impl App {
             }
             Page::New => Some(Req::Explore(self.preferred_artist_ids())),
             // The empty search is the page's landing state: nothing to ask for.
-            Page::Search(q) if !q.trim().is_empty() && self.search.as_ref().is_none_or(|s| &s.query != q) => Some(Req::Search(q.clone())),
+            Page::Search(q) if !self.search_library_only && !q.trim().is_empty() && self.search.as_ref().is_none_or(|s| &s.query != q) => Some(Req::Search(q.clone())),
             Page::Album(id) | Page::Playlist(id) => {
                 self.visit_list(id, matches!(self.page, Page::Album(_)));
                 None

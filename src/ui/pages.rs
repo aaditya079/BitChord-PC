@@ -479,6 +479,54 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         app.search_text = q.trim().to_owned();
     }
     super::shell::search_field(app, ui, ui.available_width().min(560.0));
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+        if widgets::chip(ui, "Online", !app.search_library_only).clicked() {
+            app.search_library_only = false;
+        }
+        if widgets::chip(ui, "In Library", app.search_library_only).clicked() {
+            app.search_library_only = true;
+        }
+    });
+
+    if app.search_library_only {
+        let q_input = app.search_text.trim();
+        let all_local = crate::downloads::list();
+        let matches: Vec<Track> = if q_input.is_empty() {
+            all_local
+        } else {
+            let q_lower = q_input.to_lowercase();
+            all_local.into_iter().filter(|t| {
+                t.title.to_lowercase().contains(&q_lower)
+                    || t.artists.iter().any(|a| a.name.to_lowercase().contains(&q_lower))
+                    || t.album.as_ref().map(|l| l.name.as_str()).unwrap_or("").to_lowercase().contains(&q_lower)
+            }).collect()
+        };
+
+        ui.add_space(14.0);
+        if matches.is_empty() {
+            ui.add_space(18.0);
+            ui.label(RichText::new("No songs found in local library").font(theme::bold(20.0)).color(theme::text()));
+            ui.add_space(6.0);
+            ui.label(RichText::new(format!("No downloaded or synced local tracks match \"{}\".", q_input)).font(theme::regular(14.0)).color(theme::text_dim()));
+            return;
+        }
+
+        ui.label(RichText::new(format!("Library Results ({})", matches.len())).font(theme::bold(22.0)).color(theme::text()));
+        ui.add_space(10.0);
+        let rows = Rows::new(app, now);
+        let liked = &app.liked;
+        let acts = &mut app.actions;
+        for (i, t) in matches.iter().enumerate() {
+            let o = RowOpts { pick, ..rows.opts(liked, t, None, true) };
+            if track_row(ui, t, &o, acts).clicked() {
+                acts.push(if pick { Action::TransferPick(t.clone()) } else { Action::Play(matches.clone(), i) });
+            }
+        }
+        return;
+    }
+
     if q.trim().is_empty() {
         ui.add_space(26.0);
         recent_searches(ui, app);
@@ -656,6 +704,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     }
     let px = (232.0 * ui.ctx().pixels_per_point()).round().max(256.0) as u32;
     let sprite = if animated { app.apple_sprite(ui.ctx(), &release, &artist, None, px) } else { None };
+    let accent = app.accent_color();
     let Some(o) = app.lists.get(id) else { return };
     let (c, more) = (&o.c, app.receiving(id));
     let acts = &mut app.actions;
@@ -669,7 +718,8 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     ui.add_space(18.0);
     ui.horizontal_top(|ui| {
         let (img, _) = ui.allocate_exact_size(Vec2::splat(232.0), Sense::hover());
-        widgets::soft_shadow(ui, img, 10.0, 40.0, 0.5);
+        widgets::ambient_shadow(ui, img, theme::card_radius() + 2.0, 42.0, theme::with_alpha(accent, 0.35));
+        widgets::soft_shadow(ui, img, 10.0, 32.0, 0.4);
         paint_cover(ui, img, &c.thumbs, theme::card_radius() + 2.0, 1.0);
         if let Some(s) = &sprite {
             widgets::paint_motion(ui, img, theme::card_radius() + 2.0, s);
@@ -724,7 +774,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = vec2(10.0, 0.0);
                 play_pill(ui, acts, &target, tracks);
-                if circle_action(ui, CircleGlyph::Char(icon::SHUFFLE), "Shuffle", false).clicked() && !tracks.is_empty() {
+                if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() && !tracks.is_empty() {
                     let mut t = tracks.clone();
                     super::shuffle(&mut t);
                     acts.push(Action::Play(t, 0));
@@ -746,7 +796,7 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
                         && widgets::menu_action(ui, Some(icon::DOWNLOAD), "Download all songs")
                     {
                         let to_dl: Vec<Track> = tracks.iter().filter(|t| crate::downloads::path(&t.id).is_none()).cloned().collect();
-                        if to_dl.is_empty() {
+                        if !to_dl.is_empty() {
                             acts.push(Action::DownloadBatch(to_dl));
                         }
                     }
