@@ -112,6 +112,7 @@ pub enum Action {
     /// Rows (indices into the open playlist) to take out of it.
     RemoveFromPlaylist(Vec<usize>),
     Download(Track),
+    DownloadBatch(Vec<Track>),
     NewPlaylist(Vec<Track>),
     EditPlaylist,
     /// The open playlist's collaboration settings.

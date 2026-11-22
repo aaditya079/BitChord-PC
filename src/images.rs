@@ -114,7 +114,14 @@ impl BytesLoader for HttpImages {
                 return;
             }
             let res = async {
-                let resp = http.get(&uri).send().await?.error_for_status()?;
+                let resp = match http.get(&uri).send().await.and_then(|r| r.error_for_status()) {
+                    Ok(r) => r,
+                    Err(_e) if uri.contains("/maxresdefault.jpg") => {
+                        let fallback = uri.replace("/maxresdefault.jpg", "/hqdefault.jpg");
+                        http.get(&fallback).send().await?.error_for_status()?
+                    }
+                    Err(e) => return Err(e),
+                };
                 let mime = resp
                     .headers()
                     .get(reqwest::header::CONTENT_TYPE)

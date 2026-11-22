@@ -714,6 +714,12 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
                     super::shuffle(&mut t);
                     acts.push(Action::Play(t, 0));
                 }
+                if circle_action(ui, CircleGlyph::Char(icon::DOWNLOAD), "Download all songs", false).clicked() && !tracks.is_empty() {
+                    let to_dl: Vec<Track> = tracks.iter().filter(|t| crate::downloads::path(&t.id).is_none()).cloned().collect();
+                    if !to_dl.is_empty() {
+                        acts.push(Action::DownloadBatch(to_dl));
+                    }
+                }
                 if circle_action(ui, CircleGlyph::Char(icon::SEARCH), "Search in this list", filter_on).clicked() {
                     toggle_search = true;
                 }
@@ -721,6 +727,14 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
                 egui::Popup::menu(&more).show(|ui| {
                     ui.set_width(226.0);
                     ui.add_space(3.0);
+                    if !tracks.is_empty()
+                        && widgets::menu_action(ui, Some(icon::DOWNLOAD), "Download all songs")
+                    {
+                        let to_dl: Vec<Track> = tracks.iter().filter(|t| crate::downloads::path(&t.id).is_none()).cloned().collect();
+                        if to_dl.is_empty() {
+                            acts.push(Action::DownloadBatch(to_dl));
+                        }
+                    }
                     if let Some(first) = tracks.first()
                         && widgets::menu_action(ui, Some(icon::RADIO), "Start radio")
                     {
@@ -1086,6 +1100,12 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                         super::shuffle(&mut t);
                         app.actions.push(Action::Play(t, 0));
                     }
+                    if pill(ui, "Download all", Some(icon::DOWNLOAD), false).clicked() {
+                        let to_dl: Vec<Track> = liked.iter().filter(|t| crate::downloads::path(&t.id).is_none()).cloned().collect();
+                        if !to_dl.is_empty() {
+                            app.actions.push(Action::DownloadBatch(to_dl));
+                        }
+                    }
                     select_pill(ui, &mut app.selection, &app.page);
                 });
                 ui.add_space(10.0);
@@ -1137,9 +1157,15 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
                 .color(theme::text_dim()),
         );
         ui.add_space(10.0);
-        if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
-            crate::downloads::open_folder();
-        }
+        ui.horizontal(|ui| {
+            if pill(ui, "Sync folder", None, false).clicked() {
+                crate::downloads::sync_local_files();
+                app.toast("Synced local music folder");
+            }
+            if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
+                crate::downloads::open_folder();
+            }
+        });
         return;
     }
     ui.horizontal(|ui| {
@@ -1150,6 +1176,10 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
             let mut t = songs.clone();
             super::shuffle(&mut t);
             app.actions.push(Action::Play(t, 0));
+        }
+        if pill(ui, "Sync folder", None, false).clicked() {
+            crate::downloads::sync_local_files();
+            app.toast("Synced local music folder");
         }
         if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
             crate::downloads::open_folder();
