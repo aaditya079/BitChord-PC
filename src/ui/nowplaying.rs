@@ -931,13 +931,19 @@ fn quality_icon_texture(ui: &Ui, atmos: bool, mark: bool) -> egui::TextureHandle
     for p in &mut img.pixels {
         *p = Color32::from_white_alpha(p.a());
     }
-    let tex = ctx.load_texture(if atmos { "dolby-atmos" } else { "apple-lossless" }, img, egui::TextureOptions::LINEAR);
+    let options = egui::TextureOptions {
+        magnification: egui::TextureFilter::Linear,
+        minification: egui::TextureFilter::Linear,
+        wrap_mode: egui::TextureWrapMode::ClampToEdge,
+        mipmap_mode: Some(egui::TextureFilter::Linear),
+    };
+    let tex = ctx.load_texture(if atmos { "dolby-atmos" } else { "apple-lossless" }, img, options);
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
     tex
 }
 
 fn paint_quality_icon(ui: &Ui, center: egui::Pos2, height: f32, atmos: bool, tint: Color32, mark: bool) {
-    let w = height * if mark { quality_mark_aspect(atmos) } else { quality_icon_aspect(atmos) };
+    let w = (height * if mark { quality_mark_aspect(atmos) } else { quality_icon_aspect(atmos) }).round();
     let rect = Rect::from_center_size(center, vec2(w, height));
     let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     ui.painter().image(quality_icon_texture(ui, atmos, mark).id(), rect, uv, tint);
