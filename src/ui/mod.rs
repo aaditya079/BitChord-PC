@@ -567,6 +567,8 @@ pub struct App {
     dialog: Option<Dialog>,
     share_pending: Option<String>,
     smoke: Option<String>,
+    pub sleep_timer: Option<std::time::Instant>,
+    pub sleep_base_volume: Option<f32>,
 }
 
 /// Longest crossfade offered, in seconds.
@@ -826,6 +828,8 @@ impl App {
             dialog: None,
             share_pending: None,
             smoke: None,
+            sleep_timer: None,
+            sleep_base_volume: None,
         };
         app.request_liked(false);
         // Dev hooks: YTM_SMOKE="query" searches and plays the first song ("id:<videoId>[,<videoId>…]"
@@ -1212,6 +1216,31 @@ impl eframe::App for App {
             self.upload_files(files);
         }
         transfer::poll(self, ctx, now);
+        // Sleep timer tick with 30s gradual fade-out
+        if let Some(target) = self.sleep_timer {
+            let sys_now = std::time::Instant::now();
+            if sys_now >= target {
+                self.sleep_timer = None;
+                if let Some(orig_vol) = self.sleep_base_volume.take() {
+                    self.audio.send(crate::audio::AudioCmd::Volume(orig_vol));
+                }
+                self.audio.send(crate::audio::AudioCmd::Pause);
+                self.toast("Sleep timer finished: playback paused");
+            } else {
+                let remaining = target.saturating_duration_since(sys_now);
+                let rem_secs = remaining.as_secs_f32();
+                if rem_secs <= 30.0 {
+                    if self.sleep_base_volume.is_none() {
+                        self.sleep_base_volume = Some(self.audio.volume());
+                    }
+                    if let Some(base_vol) = self.sleep_base_volume {
+                        let factor = (rem_secs / 30.0).powi(2);
+                        self.audio.send(crate::audio::AudioCmd::Volume(base_vol * factor));
+                    }
+                }
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+        }
         if crate::deeplink::take_show() {
             self.show_window(ctx);
         }

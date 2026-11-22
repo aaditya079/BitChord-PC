@@ -1489,6 +1489,32 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
+        let sleep_label = if let Some(target) = app.sleep_timer {
+            let rem = target.saturating_duration_since(std::time::Instant::now());
+            let m = rem.as_secs() / 60;
+            let s = rem.as_secs() % 60;
+            format!("Pauses in {:02}:{:02} (with 30s gradual fade-out)", m, s)
+        } else {
+            "Off".to_string()
+        };
+        setting_row(ui, "Sleep timer", Some("Pause playback after a timer, with a gradual 30s audio fade-out to prevent abrupt cutoffs."), |ui| {
+            ui.horizontal(|ui| {
+                if pill(ui, if app.sleep_timer.is_some() { "Cancel timer" } else { "30 min timer" }, None, app.sleep_timer.is_some()).clicked() {
+                    if app.sleep_timer.is_some() {
+                        app.sleep_timer = None;
+                        if let Some(vol) = app.sleep_base_volume.take() {
+                            app.audio.send(crate::audio::AudioCmd::Volume(vol));
+                        }
+                    } else {
+                        app.sleep_timer = Some(std::time::Instant::now() + std::time::Duration::from_secs(30 * 60));
+                    }
+                }
+                if app.sleep_timer.is_some() {
+                    ui.label(RichText::new(sleep_label).font(theme::regular(13.0)).color(theme::text_dim()));
+                }
+            });
+        });
+        divider(ui);
         setting_row(ui, "Hi-Res audio", Some("Addon servers that serve hi-res copies of songs. When one has the song, its copy plays instead of YouTube's, and its quality shows in the player."), |_| {});
         ui.add_space(12.0);
         hires_sources_editor(app, ui);
