@@ -1,29 +1,37 @@
 <div align="center">
-  <h1>BitChord PC - Official</h1>
-  <p><strong>A fast, native YouTube Music desktop app — rebuilt in Rust.</strong></p>
-  <p>Built with egui and rodio. No Electron, no embedded browser player, and light on memory while playing.</p>
+  <h1>BitChord PC — Community Continued</h1>
+  <p><strong>A blazing fast, native YouTube Music desktop client — built in Rust.</strong></p>
+  <p>Engineered with egui and rodio. No Electron, zero webview audio overhead, and featherweight memory usage.</p>
 
   <p>
-    <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest"><img src="https://img.shields.io/github/v/release/jackychan4891/BitChord-PC-Continued?style=flat-square&color=a855f7&labelColor=0d1117" alt="Latest release"></a>
-    <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases"><img src="https://img.shields.io/github/downloads/jackychan4891/BitChord-PC-Continued/total?style=flat-square&color=a855f7&labelColor=0d1117" alt="Downloads"></a>
+    <a href="https://github.com/aaditya079/BitChord-PC/releases/latest"><img src="https://img.shields.io/github/v/release/aaditya079/BitChord-PC?style=flat-square&color=a855f7&labelColor=0d1117" alt="Latest release"></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-333?style=flat-square&labelColor=0d1117" alt="Platforms">
-    <a href="LICENSE"><img src="https://img.shields.io/github/license/jackychan4891/BitChord-PC-Continued?style=flat-square&color=333&labelColor=0d1117" alt="License: GPL-3.0"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square&labelColor=0d1117" alt="License: GPL-3.0"></a>
   </p>
 
   <p>
-    <a href="https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest">Download</a> ·
+    <a href="https://github.com/aaditya079/BitChord-PC/releases/latest">Download</a> ·
     <a href="#features">Features</a> ·
+    <a href="#acknowledgements--credits">Acknowledgements & Credits</a> ·
     <a href="#installation">Installation</a>
   </p>
 </div>
 
 > [!IMPORTANT]
-> BitChord is not affiliated with, endorsed by, or connected to YouTube, Google or Apple.
+> BitChord is an independent open-source project and is not affiliated with, endorsed by, or connected to YouTube, Google or Apple.
 > Use it at your own discretion.
 
-> [!TIP]
-> Need help, want to hear about new releases first, or say what should come next?
-> [Join the Discord server](https://discord.gg/cWQSGjpXM).
+---
+
+## Acknowledgements & Open-Source Credits
+
+BitChord PC is built upon the extraordinary contributions of the open-source community:
+
+- **[ytm-rs by grapedjuice](https://github.com/grapedjuice/ytm-rs)** — The original, groundbreaking native Rust YouTube Music desktop application (`egui` + `rodio` engine) that forms the foundational architecture and player core of this desktop client. Full credit and heartfelt gratitude to grapedjuice and all upstream ytm-rs contributors.
+- **[BitChord by Kushagra Singh](https://github.com/kushagrasinghx/BitChord)** — The original BitChord mobile music client that inspired the visual identity, aesthetic direction, and user experience.
+- **[egui](https://github.com/emilk/egui)** — Immediate mode graphical user interface for Rust.
+- **[rodio](https://github.com/RustAudio/rodio) & [Symphonia](https://github.com/pdeljanov/Symphonia)** — High-performance audio playback, mixing, and decoding.
+- **[InnerTube / yt-dlp](https://github.com/yt-dlp/yt-dlp)** — YouTube API extraction specifications and JavaScript challenge solving patterns.
 ## Screenshots
 
 <table>
@@ -45,25 +53,28 @@
 
 ## Features
 
-**Playback**
+**Playback & Streaming Resilience**
 - **YouTube Music, natively** — search, browse, albums, playlists, artist pages, radio, mixes, charts and your library.
+- **Children-Designated Tracks & Restricted Content Support** — automated fallback to WebMusic QuickJS challenge solver when visionOS is unplayable.
+- **Anti-403 Stream Recovery** — smart exponential backoff and URL renewal prevents playback cutoffs at the 60s / 1 MiB mark.
 - **Lossless / Hi-Res Lossless / Dolby Atmos** — play higher-quality copies from configured hi-res addon sources when a matching copy is available, with YouTube audio as the fallback.
-- **Quality controls in the player** — see the active audio quality, prefer Dolby Atmos when available, and revert or upgrade quality from the player menu.
-- **Automix and crossfade** — DJ-style transitions between songs, with a mixing state shown in the player during transitions.
+- **Automix and crossfade** — DJ-style transitions between songs, with an active mixing state shown in the player.
+- **Sleep Timer with Quadratic Audio Fade** — gradual 30-second volume fadeout so music never stops abruptly.
 - **Queue and playback controls** — shuffle, repeat, autoplay, song radio, next-track prefetch, volume normalization, and output device selection.
-- **Downloads** — save songs for offline playback.
+- **Offline Downloads & Local Sync** — batch download entire albums and playlists; auto-sync existing local music files (`.mp3`, `.flac`, `.m4a`, `.opus`, etc.) from your `Music/BitChord` directory.
 
-**Lyrics and interface**
+**Hardware & Lighting**
+- **Universal Dynamic Ambient RGB Sync** — sync keyboard backlight and peripherals with the album art's dominant color. Direct kernel ACPI support for ASUS TUF (`\\.\ATKACPI`), OpenRGB TCP bridge (`127.0.0.1:6742`), and SteelSeries GameSense loopback.
+- **Power Saver Mode** — toggle off heavy multi-pass GPU background blur shaders to maximize laptop battery life and reduce fan noise.
+
+**Interface & Visual Polish**
+- **Native Rust desktop UI** — an ultra-fast egui/rodio interface with system media controls, tray integration, and keyboard-friendly navigation.
+- **Apple Music-Style Halo & Floating Player** — ambient drop shadow glow on album art and seamless floating liquid glass player capsule.
+- **Hi-DPI Crisp Mipmaps** — integer-pixel-aligned Dolby Atmos, Lossless, and logo badges across 125%, 150%, and 200% Windows display scaling.
+- **Adaptive Light/Dark Taskbar Controls** — Windows thumbnail toolbar buttons automatically adapt their icons to Windows theme settings.
+- **Windows 11 DWM Integration** — dark titlebar and native rounded window corners via Win32 DWM APIs.
 - **Synced lyrics** — timed lyrics with provider fallbacks, timing controls, romanization and translation options.
-- **Native Rust desktop UI** — a fast egui/rodio interface with system media controls, tray integration, and keyboard-friendly navigation.
-- **Discord Rich Presence** — show what you’re listening to on Discord.
-- **Last.fm scrobbling** — connect your Last.fm account in Settings.
-
-**Accounts and library**
-- **Google sign-in** — unlock your YouTube Music feed, likes, playlists, history and recommendations.
-- **Library and uploads** — access saved music and uploaded tracks where available.
-- **Listen Together / jams** — start or join a shared listening session.
-- **Spotify transfer** — bring playlists and liked music over from Spotify.
+- **Discord Rich Presence & Last.fm** — show your currently playing song on Discord and scrobble to Last.fm.
 
 ## Installation
 
@@ -97,16 +108,9 @@ Platform builds may require native dependencies (audio/system libraries and tool
 
 ## Contributing
 
-Bug reports and pull requests are welcome. Please open an issue with clear reproduction steps, platform details, and relevant logs (with secrets/tokens removed).
+Bug reports and pull requests are welcome. Please open an issue with clear reproduction steps, platform details, and relevant logs.
 
 ## License
 
-BitChord is licensed under [GPL-3.0](LICENSE).
-
-## Acknowledgements
-
-- [egui](https://github.com/emilk/egui) for the interface.
-- [rodio](https://github.com/RustAudio/rodio) and Symphonia for audio playback and decoding.
-- [ytm-rs](https://github.com/grapedjuice/ytm-rs) for the basic rust backend.
-- Lyrics, metadata, playback, and integrations depend on the upstream libraries and third-party services used by this project.
+BitChord is licensed under [GPL-3.0](LICENSE). Derived from [ytm-rs](https://github.com/grapedjuice/ytm-rs) (GPL-3.0).
 

@@ -1392,6 +1392,7 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
     settings_card(ui, |ui| network(app, ui));
     super::transfer::settings_section(app, ui);
     settings_shortcuts(app, ui);
+    settings_about(app, ui);
 }
 
 /// The box above Settings: what's typed in it leaves only the sections and rows that say
@@ -2123,6 +2124,30 @@ fn settings_shortcuts(app: &mut App, ui: &mut Ui) {
             app.keys_edit = None;
         }
     }
+}
+
+/// Settings › About & Open-Source Credits.
+fn settings_about(_app: &mut App, ui: &mut Ui) {
+    section_label(ui, "About & Credits", Some("v2.1.0 Community Edition"));
+    settings_card(ui, |ui| {
+        setting_row(ui, "Upstream Engine (ytm-rs)", Some("The foundational native Rust, egui and rodio desktop player created by grapedjuice."), |ui| {
+            if pill(ui, "grapedjuice/ytm-rs", None, false).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/grapedjuice/ytm-rs"));
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Design & Mobile App", Some("The original BitChord music client created by Kushagra Singh."), |ui| {
+            if pill(ui, "kushagrasinghx/BitChord", None, false).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/kushagrasinghx/BitChord"));
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Community Continued", Some("Maintained by Aaditya Srinivasan (@aaditya079) with dynamic RGB sync, batch downloads, blur toggles, and streaming resilience."), |ui| {
+            if pill(ui, "GitHub", None, false).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/aaditya079/BitChord-PC"));
+            }
+        });
+    });
 }
 
 /// Settings › Network: the proxy everything goes through, a connection test, and a
