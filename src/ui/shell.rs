@@ -694,9 +694,10 @@ fn suggestion_text(ui: &Ui, pos: Pos2, text: &str, typed: &str, width: f32) {
 pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let full = ui.max_rect();
     if frosted {
-        // The page scrolls on under this strip: fade it out rather than end it at the
-        // player's edge. Clicks in the fade stay with the player, not the rows beneath.
-        vgradient(ui.painter(), full, theme::panel(0.0), theme::panel(0.66));
+        // The page scrolls on under this strip: fade it cleanly into the background color
+        // so content doesn't create dirty artifacts or bleed under the floating pill.
+        let base = base_color(app);
+        vgradient(ui.painter(), full, base.gamma_multiply(0.0), base.gamma_multiply(0.92));
         ui.interact(full, ui.id().with("player-strip"), Sense::hover());
     }
     const H: f32 = 56.0;
@@ -704,13 +705,14 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let cap = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 16.0 - H), vec2(w, H));
     let ctx = ui.ctx().clone();
     widgets::soft_shadow(ui, cap, H / 2.0, 20.0, 0.45);
-    // Frosted: the page's colours show through a milky pane, with a lit top half and
-    // a bright rim standing in for the blur egui can't do.
-    ui.painter().rect_filled(cap, H / 2.0, theme::panel(0.88));
+    // Solid base layer prevents the shadow and underlying scrolled rows from bleeding through the pill
+    ui.painter().rect_filled(cap, H / 2.0, base_color(app));
+    // Frosted glass surface: lit top highlight and crisp rim
+    ui.painter().rect_filled(cap, H / 2.0, theme::panel(0.92));
     let top = Rect::from_min_max(cap.min, pos2(cap.max.x, cap.min.y + H * 0.55));
-    ui.painter().rect_filled(top, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, theme::glass(0.07));
-    ui.painter().rect_stroke(cap, H / 2.0, egui::Stroke::new(1.0, theme::glass(0.2)), egui::StrokeKind::Inside);
-    ui.painter().hline(cap.x_range().shrink(26.0), cap.top() + 1.0, egui::Stroke::new(1.0, theme::glass(0.24)));
+    ui.painter().rect_filled(top, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, theme::glass(0.08));
+    ui.painter().rect_stroke(cap, H / 2.0, egui::Stroke::new(1.0, theme::glass(0.22)), egui::StrokeKind::Inside);
+    ui.painter().hline(cap.x_range().shrink(26.0), cap.top() + 1.0, egui::Stroke::new(1.0, theme::glass(0.26)));
 
     let status = app.audio.status.clone();
     // An Automix handoff keeps the outgoing song on this strip until the next one is
