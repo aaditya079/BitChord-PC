@@ -34,6 +34,13 @@ Deliver an ultra-fluid, zero-lag, gapless desktop music listening experience wit
 - **Problem Solved**: Previous PC ports were controversial forks of `ytm-rs` that stripped credits. BitChord PC v3 is a fresh, original, clean-room community initiative built in close alignment with BitChord's design language.
 - **Hardware Profile**: Engineered for Windows 10/11 64-bit systems, optimized for low VRAM and CPU efficiency.
 
+## Constraints & Performance Targets
+
+- **Memory Ceiling:** Total client idle RAM consumption must stay strictly under **70 MB** (vs 400MB+ in typical Electron apps).
+- **Real-Time Audio Invariant:** Zero heap allocations, zero mutex locks, and zero file I/O inside the `cpal` audio callback thread.
+- **Streaming Eviction:** Decode audio on-the-fly; never buffer uncompressed PCM for long tracks.
+- **CPU Overhead:** Target < 0.5% CPU utilization during background playback on modern multi-core x86_64 CPUs.
+
 ## Key Decisions
 
 | Decision | Rationale | Outcome |

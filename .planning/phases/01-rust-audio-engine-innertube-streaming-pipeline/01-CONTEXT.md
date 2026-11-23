@@ -32,6 +32,15 @@ Build a standalone, headless Rust audio engine and YouTube Innertube API streami
 - **Rationale:** Avoids waiting for entire track to download before playing, while eliminating re-download bandwidth when seeking or looping.
 - **Reversibility:** reversible — chunk manager handles range streams behind a standard read stream abstraction.
 
+### 5. Extreme Performance & Low-Memory Constraints ("Optimized AF")
+- **Decision:** Strict Real-Time Audio Thread Rules & On-the-Fly Decoding:
+  - **Zero Allocations on Audio Thread:** The `cpal` output callback operates on a lock-free SPSC ring buffer (`rtrb`). Zero allocations, zero mutex contention, zero file I/O inside the audio processing loop.
+  - **Bounded Memory Footprint (Never store raw PCM):** Raw 48kHz 32-bit stereo PCM consumes ~23 MB/minute. Instead of buffering decoded PCM, the engine stores compressed Opus/AAC chunks on disk and decodes only 2-3 seconds ahead of the playhead. Idle RAM ceiling: **< 50MB**.
+  - **Zero-Copy Byte Slices:** Use `bytes::Bytes` for network chunk ingestion to avoid heap reallocations.
+  - **Compiler Optimizations:** Profile release targets with `opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, and `panic = "abort"`.
+- **Rationale:** Guarantees buttery-smooth 60fps desktop experience without stutter even when gaming on an RTX 3050 / budget laptop with strict RAM limits.
+- **Reversibility:** costly — memory architectures must be built into data structures from day one.
+
 </decisions>
 
 <canonical_refs>
