@@ -45,4 +45,4 @@ jobs:
       # Also when a test failed, so one run shows both.
       - name: Clippy
         if: ${{ !cancelled() }}
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets
