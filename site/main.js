@@ -185,24 +185,19 @@
     ctx.lineTo(points[points.length - 1].x, midY);
     ctx.closePath();
 
-    const fillGrad = ctx.createLinearGradient(0, 0, 0, h);
-    fillGrad.addColorStop(0, "rgba(0, 240, 255, 0.25)");
-    fillGrad.addColorStop(1, "rgba(59, 130, 246, 0.0)");
-    ctx.fillStyle = fillGrad;
+    // Flat fill area under curve
+    ctx.fillStyle = "rgba(250, 88, 106, 0.12)";
     ctx.fill();
 
-    // Stroke line
+    // Clean solid BitChord Red stroke line (no blurry glow/gradient)
     ctx.beginPath();
     points.forEach((p, idx) => {
       if (idx === 0) ctx.moveTo(p.x, p.y);
       else ctx.lineTo(p.x, p.y);
     });
-    ctx.strokeStyle = "#00f0ff";
-    ctx.lineWidth = 2.5;
-    ctx.shadowColor = "rgba(0, 240, 255, 0.6)";
-    ctx.shadowBlur = 12;
+    ctx.strokeStyle = "#fa586a";
+    ctx.lineWidth = 2.0;
     ctx.stroke();
-    ctx.shadowBlur = 0;
   }
 
   function applyPreset(name) {
