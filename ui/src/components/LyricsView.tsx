@@ -73,7 +73,7 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, positionMs, isLo
                 : 'text-white/30 text-lg font-medium opacity-40 hover:opacity-70'
             }`}
           >
-            {line.text || '♪'}
+            {line.text || '...'}
           </div>
         );
       })}
