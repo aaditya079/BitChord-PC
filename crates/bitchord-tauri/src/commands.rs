@@ -140,3 +140,11 @@ pub async fn toggle_shuffle(state: State<'_, AppState>) -> Result<bool, String> 
 pub async fn is_shuffle(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.engine.is_shuffle())
 }
+
+#[tauri::command]
+pub async fn sync_ambient_rgb(r: u8, g: u8, b: u8) -> Result<(), String> {
+    use bitchord_core::os::palette::RgbColor;
+    use bitchord_core::os::rgb::OpenRgbClient;
+    OpenRgbClient::sync_color(RgbColor::new(r, g, b)).await;
+    Ok(())
+}

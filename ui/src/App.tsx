@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Titlebar } from './components/Titlebar';
 import { SearchBar } from './components/SearchBar';
 import { TrackCard } from './components/TrackCard';
@@ -6,6 +6,7 @@ import { NowPlayingBar } from './components/NowPlayingBar';
 import { FullscreenPlayer } from './components/FullscreenPlayer';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { Sparkles, Music2 } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 
 export const App: React.FC = () => {
   const {
@@ -35,14 +36,79 @@ export const App: React.FC = () => {
   } = useAudioEngine();
 
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
+  const [accentColor, setAccentColor] = useState<{ r: number; g: number; b: number }>({
+    r: 244,
+    g: 63,
+    b: 94,
+  });
+
+  // Extract dominant color from album artwork & sync OpenRGB peripherals
+  useEffect(() => {
+    if (!currentTrack?.thumbnail_url) return;
+
+    const img = new Image();
+    img.crossOrigin = 'Anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.drawImage(img, 0, 0, 32, 32);
+        const data = ctx.getImageData(0, 0, 32, 32).data;
+
+        let rAcc = 0,
+          gAcc = 0,
+          bAcc = 0,
+          count = 0;
+
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+
+          const maxC = Math.max(r, g, b);
+          const minC = Math.min(r, g, b);
+          const brightness = (r + g + b) / 3;
+
+          if (maxC - minC > 20 && brightness > 30 && brightness < 225) {
+            rAcc += r;
+            gAcc += g;
+            bAcc += b;
+            count += 1;
+          }
+        }
+
+        if (count > 0) {
+          const newColor = {
+            r: Math.round(rAcc / count),
+            g: Math.round(gAcc / count),
+            b: Math.round(bAcc / count),
+          };
+          setAccentColor(newColor);
+          invoke('sync_ambient_rgb', newColor).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('Could not extract palette:', e);
+      }
+    };
+    img.src = currentTrack.thumbnail_url;
+  }, [currentTrack?.video_id]);
 
   return (
     <div className="relative w-screen h-screen overflow-hidden flex flex-col bg-zinc-950/70 select-none text-zinc-100">
       {/* Frameless OS Titlebar */}
       <Titlebar />
 
-      {/* Ambient background glow */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[300px] bg-rose-600/10 rounded-full blur-[120px] pointer-events-none" />
+      {/* Dynamic Ambient background glow */}
+      <div
+        className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[350px] rounded-full blur-[140px] pointer-events-none transition-all duration-700 ease-out"
+        style={{
+          backgroundColor: `rgba(${accentColor.r}, ${accentColor.g}, ${accentColor.b}, 0.16)`,
+        }}
+      />
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto pt-14 pb-28 px-6 max-w-5xl mx-auto w-full">

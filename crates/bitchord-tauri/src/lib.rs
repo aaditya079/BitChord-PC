@@ -1,7 +1,10 @@
 pub mod commands;
+pub mod media_keys;
 pub mod state;
 
+use bitchord_core::os::discord::DiscordRpc;
 use state::{AppState, PlaybackProgress};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tracing::info;
@@ -9,10 +12,13 @@ use tracing::info;
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    let app_state = AppState::new().expect("Failed to initialize BitChord AppState");
+    let app_state = Arc::new(AppState::new().expect("Failed to initialize BitChord AppState"));
+
+    // Start Windows Global Hardware Media Keys Listener
+    media_keys::start_media_keys_listener(app_state.clone());
 
     tauri::Builder::default()
-        .manage(app_state)
+        .manage((*app_state).clone_state())
         .invoke_handler(tauri::generate_handler![
             commands::play_track,
             commands::toggle_playback,
@@ -34,6 +40,7 @@ pub fn run() {
             commands::get_repeat_mode,
             commands::toggle_shuffle,
             commands::is_shuffle,
+            commands::sync_ambient_rgb,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
@@ -47,12 +54,17 @@ pub fn run() {
                 }
             }
 
-            // Start 100ms playback progress ticker for the frontend UI
+            // Start 100ms playback progress ticker for the frontend UI & Discord RPC
             let app_handle = app.handle().clone();
+            let discord_rpc = Arc::new(DiscordRpc::new());
+
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(100));
+                let mut tick_counter = 0u64;
+
                 loop {
                     interval.tick().await;
+                    tick_counter = tick_counter.wrapping_add(1);
 
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         let is_playing = state.engine.is_playing();
@@ -66,11 +78,33 @@ pub fn run() {
                         };
 
                         let _ = app_handle.emit("bitchord://progress", payload);
+
+                        // Broadcast to Discord every 2.5 seconds (every 25 ticks)
+                        if tick_counter % 25 == 0 {
+                            if let Some(track) = state.engine.current_track().await {
+                                let rpc = discord_rpc.clone();
+                                let title = track.title;
+                                let artist = track.artists.join(", ");
+                                let thumb = track.thumbnail_url;
+
+                                tauri::async_runtime::spawn(async move {
+                                    rpc.update_presence(
+                                        &title,
+                                        &artist,
+                                        thumb.as_deref(),
+                                        is_playing,
+                                        position_ms,
+                                        duration_ms,
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
                     }
                 }
             });
 
-            info!("BitChord Tauri v2 window initialized with Mica/Acrylic glass styling");
+            info!("BitChord Tauri v2 window initialized with Mica, Media Keys & Discord RPC");
             Ok(())
         })
         .run(tauri::generate_context!())

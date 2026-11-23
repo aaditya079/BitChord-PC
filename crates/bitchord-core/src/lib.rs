@@ -7,6 +7,7 @@ pub mod stream;
 pub mod cache;
 pub mod player;
 pub mod sink;
+pub mod os;
 
 pub use innertube::client::InnertubeClient;
 pub use player::engine::AudioEngine;

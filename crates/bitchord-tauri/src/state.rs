@@ -47,12 +47,16 @@ impl From<TrackDto> for Track {
     }
 }
 
+#[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<AudioEngine>,
     pub innertube: Arc<InnertubeClient>,
 }
 
 impl AppState {
+    pub fn clone_state(&self) -> Self {
+        self.clone()
+    }
     pub fn new() -> Result<Self, String> {
         let engine = AudioEngine::new().map_err(|e| e.to_string())?;
         let innertube = Arc::new(InnertubeClient::new());
