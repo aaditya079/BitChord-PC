@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use regex::Regex;
 use thiserror::Error;
 
@@ -14,15 +12,13 @@ pub enum CipherError {
 }
 
 /// Dynamic solver for YouTube player signature and n-sig challenges.
-pub struct CipherSolver {
-    context: Arc<Mutex<Option<boa_engine::Context>>>,
-}
+/// Pure Rust and thread-safe (Send + Sync).
+#[derive(Default, Clone)]
+pub struct CipherSolver;
 
 impl CipherSolver {
     pub fn new() -> Self {
-        Self {
-            context: Arc::new(Mutex::new(None)),
-        }
+        Self
     }
 
     /// Evaluates dynamic decipher operations for signature cipher query string.
@@ -49,7 +45,7 @@ impl CipherSolver {
         let s = signature.ok_or(CipherError::SignatureNotFound)?;
 
         let solved_sig = if let Some(js_code) = player_js {
-            self.eval_js_signature(&s, js_code).await.unwrap_or(s)
+            self.eval_js_signature(&s, js_code).unwrap_or(s)
         } else {
             s
         };
@@ -69,7 +65,7 @@ impl CipherSolver {
             .map(|(_, v)| v.to_string());
 
         if let (Some(n), Some(js_code)) = (n_val, player_js) {
-            if let Ok(transformed_n) = self.eval_n_transform(&n, js_code).await {
+            if let Ok(transformed_n) = self.eval_n_transform(&n, js_code) {
                 let mut pairs: Vec<(String, String)> = parsed_url
                     .query_pairs()
                     .filter(|(k, _)| k != "n")
@@ -87,11 +83,9 @@ impl CipherSolver {
         Ok(parsed_url.to_string())
     }
 
-    async fn eval_js_signature(&self, sig: &str, js_code: &str) -> Result<String, CipherError> {
-        let mut ctx_lock = self.context.lock().await;
-        let ctx = ctx_lock.get_or_insert_with(boa_engine::Context::default);
+    fn eval_js_signature(&self, sig: &str, js_code: &str) -> Result<String, CipherError> {
+        let mut ctx = boa_engine::Context::default();
 
-        // Find decipher entrypoint function
         let re_entry = Regex::new(r#"(?:\b[cs]\s*&&\s*[adf]\.set\([^,]+\s*,\s*encodeURIComponent\s*\(\s*([a-zA-Z0-9$]+)\("#).unwrap();
         if let Some(caps) = re_entry.captures(js_code) {
             let fn_name = &caps[1];
@@ -99,15 +93,14 @@ impl CipherSolver {
             let val = ctx
                 .eval(boa_engine::Source::from_bytes(&script))
                 .map_err(|e| CipherError::JsError(e.to_string()))?;
-            return Ok(val.to_string(ctx).map_err(|e| CipherError::JsError(e.to_string()))?.to_std_string_escaped());
+            return Ok(val.to_string(&mut ctx).map_err(|e| CipherError::JsError(e.to_string()))?.to_std_string_escaped());
         }
 
         Err(CipherError::SignatureNotFound)
     }
 
-    async fn eval_n_transform(&self, n: &str, js_code: &str) -> Result<String, CipherError> {
-        let mut ctx_lock = self.context.lock().await;
-        let ctx = ctx_lock.get_or_insert_with(boa_engine::Context::default);
+    fn eval_n_transform(&self, n: &str, js_code: &str) -> Result<String, CipherError> {
+        let mut ctx = boa_engine::Context::default();
 
         let re_n = Regex::new(r#"([a-zA-Z0-9$]+)\s*=\s*function\([a-zA-Z0-9$]+\)\s*\{var\s+[a-zA-Z0-9$]+\s*=\s*[a-zA-Z0-9$]+\.split\(""#).unwrap();
         if let Some(caps) = re_n.captures(js_code) {
@@ -116,7 +109,7 @@ impl CipherSolver {
             let val = ctx
                 .eval(boa_engine::Source::from_bytes(&script))
                 .map_err(|e| CipherError::JsError(e.to_string()))?;
-            return Ok(val.to_string(ctx).map_err(|e| CipherError::JsError(e.to_string()))?.to_std_string_escaped());
+            return Ok(val.to_string(&mut ctx).map_err(|e| CipherError::JsError(e.to_string()))?.to_std_string_escaped());
         }
 
         Err(CipherError::JsError("n-transform function not found".to_string()))
