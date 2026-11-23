@@ -26,6 +26,5 @@ A high-performance, open-source desktop client for BitChord and YouTube Music wi
 ---
 
 ### Installation
-1. Download **bitchord-v2.1.0-windows-x64.zip** below.
-2. Extract the folder anywhere.
-3. Run **bitchord.exe** (requires Windows 10/11 64-bit).
+* **Installer**: Download and run **bitchord-setup-2.1.0.exe** (recommended, requires Windows 10/11 64-bit).
+* **Portable**: Download **bitchord-v2.1.0-windows-x64.zip**, extract anywhere, and run **bitchord.exe**.
