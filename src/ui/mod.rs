@@ -436,6 +436,7 @@ pub struct App {
     appearance: theme::Appearance,
     anim_bg: bool,
     reactive_bg: bool,
+    pub disable_blur: bool,
     /// Apple's moving album art. Off unless asked for: a sleeve needs a decoder, a
     /// frame and a texture each, and they add up while the music plays.
     animated_artwork: bool,
@@ -788,6 +789,7 @@ impl App {
             appearance: theme::Appearance::from_key(&dev_var("YTM_APPEARANCE").map(str::to_owned).or_else(|| get("appearance")).unwrap_or_default()),
             anim_bg: get("anim_bg").is_none_or(|v| v == "1"),
             reactive_bg: get("reactive_bg").is_none_or(|v| v == "1"),
+            disable_blur: get("disable_blur").is_some_and(|v| v == "1"),
             animated_artwork: get("animated_artwork").is_some_and(|v| v == "1"),
             sync_rgb: get("sync_rgb").is_some_and(|v| v == "1"),
             sponsorblock: get("sponsorblock").is_some_and(|v| v == "1"),
@@ -1332,7 +1334,7 @@ impl eframe::App for App {
         } else if playing && widgets::equalizer_shown(ctx) {
             // The playing row's bars need a steady, full rate to read as smooth.
             ctx.request_repaint_after(Duration::from_millis(16));
-        } else if playing && self.anim_bg && shell::pages_bg_moves(self.look()) {
+        } else if playing && self.anim_bg && !self.disable_blur && shell::pages_bg_moves(self.look()) {
             ctx.request_repaint_after(Duration::from_millis(66));
         } else if playing || self.buffering {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -1593,6 +1595,7 @@ impl eframe::App for App {
         }
         storage.set_string("anim_bg", b(self.anim_bg));
         storage.set_string("reactive_bg", b(self.reactive_bg));
+        storage.set_string("disable_blur", b(self.disable_blur));
         storage.set_string("animated_artwork", b(self.animated_artwork));
         storage.set_string("sync_rgb", b(self.sync_rgb));
         storage.set_string("signature_api", self.signature_api.clone());
