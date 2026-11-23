@@ -81,5 +81,5 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: Offline Track Downloader & Local Tagged Storage
-- [ ] 05-02: Release Installer Bundler (WiX MSI & NSIS Setup)
+- [x] 05-01: Offline Track Downloader & Local Tagged Storage
+- [x] 05-02: Release Installer Bundler (WiX MSI & NSIS Setup)

@@ -41,6 +41,10 @@ pub fn run() {
             commands::toggle_shuffle,
             commands::is_shuffle,
             commands::sync_ambient_rgb,
+            commands::download_track,
+            commands::is_track_downloaded,
+            commands::get_downloaded_tracks,
+            commands::delete_downloaded_track,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

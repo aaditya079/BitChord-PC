@@ -1,4 +1,5 @@
 use crate::cache::disk::DiskCache;
+use crate::cache::offline::OfflineStorage;
 use crate::innertube::client::InnertubeClient;
 use crate::innertube::models::Track;
 use crate::player::decoder::AudioDecoder;
@@ -26,11 +27,12 @@ pub enum PlayerError {
     Io(#[from] std::io::Error),
 }
 
-/// Master BitChord audio playback engine with queue management.
-/// Coordinates stream downloading, on-the-fly decoding, loudness leveling, and real-time output.
+/// Master BitChord audio playback engine with queue management and offline sync.
 pub struct AudioEngine {
     innertube: Arc<InnertubeClient>,
     disk_cache: Arc<DiskCache>,
+    offline: Arc<OfflineStorage>,
+    http_client: reqwest::Client,
     sink: Arc<CpalAudioSink>,
     producer: Arc<Mutex<Option<Producer<f32>>>>,
     is_playing: Arc<AtomicBool>,
@@ -52,10 +54,13 @@ impl AudioEngine {
     pub fn new() -> Result<Self, PlayerError> {
         let (sink, producer) = CpalAudioSink::new()?;
         let disk_cache = DiskCache::new().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let offline = OfflineStorage::new().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         Ok(Self {
             innertube: Arc::new(InnertubeClient::new()),
             disk_cache: Arc::new(disk_cache),
+            offline: Arc::new(offline),
+            http_client: reqwest::Client::new(),
             sink: Arc::new(sink),
             producer: Arc::new(Mutex::new(Some(producer))),
             is_playing: Arc::new(AtomicBool::new(false)),
@@ -73,44 +78,50 @@ impl AudioEngine {
         })
     }
 
-    /// Plays a track by its YouTube video ID.
+    /// Plays a track by its YouTube video ID. Checks offline storage first.
     pub async fn play(&self, video_id: &str) -> Result<(), PlayerError> {
         self.stop();
 
         info!("Starting playback for track ID: {}", video_id);
 
-        let stream_info = self.innertube.get_stream(video_id).await?;
-
-        // Calculate loudness gain normalization (target -14 LUFS)
-        let loudness_gain = if let Some(loudness_db) = stream_info.loudness_db {
-            let gain = 10.0f32.powf(-loudness_db / 20.0);
-            gain.clamp(0.2, 1.8)
+        let mut decoder = if let Some((_meta, local_path)) = self.offline.get_downloaded_track(video_id) {
+            info!("Playing track from local offline storage: {:?}", local_path);
+            let file = std::fs::File::open(local_path)?;
+            AudioDecoder::new(file, "opus")?
         } else {
-            1.0
+            let stream_info = self.innertube.get_stream(video_id).await?;
+
+            // Calculate loudness gain normalization (target -14 LUFS)
+            let loudness_gain = if let Some(loudness_db) = stream_info.loudness_db {
+                let gain = 10.0f32.powf(-loudness_db / 20.0);
+                gain.clamp(0.2, 1.8)
+            } else {
+                1.0
+            };
+
+            {
+                let mut gain_lock = self.normalizer_gain.lock().await;
+                *gain_lock = loudness_gain;
+                self.apply_master_volume().await;
+            }
+
+            let dl = Arc::new(ChunkDownloader::new(
+                self.http_client.clone(),
+                video_id.to_string(),
+                stream_info.url,
+                stream_info.content_length,
+                self.innertube.clone(),
+            ));
+
+            let stream_buf = StreamBuffer::new(
+                dl,
+                &self.disk_cache,
+                video_id,
+                self.runtime_handle.clone(),
+            )?;
+
+            AudioDecoder::new(stream_buf, &stream_info.codec)?
         };
-
-        {
-            let mut gain_lock = self.normalizer_gain.lock().await;
-            *gain_lock = loudness_gain;
-            self.apply_master_volume().await;
-        }
-
-        let dl = Arc::new(ChunkDownloader::new(
-            reqwest::Client::new(),
-            video_id.to_string(),
-            stream_info.url,
-            stream_info.content_length,
-            self.innertube.clone(),
-        ));
-
-        let stream_buf = StreamBuffer::new(
-            dl,
-            &self.disk_cache,
-            video_id,
-            self.runtime_handle.clone(),
-        )?;
-
-        let mut decoder = AudioDecoder::new(stream_buf, &stream_info.codec)?;
 
         if let Some(secs) = decoder.duration_secs {
             self.duration_ms.store((secs * 1000.0) as u64, Ordering::Release);
@@ -199,6 +210,25 @@ impl AudioEngine {
         self.play(&video_id).await
     }
 
+    // Offline Library APIs
+    pub async fn download_track(&self, track: &Track) -> Result<(), String> {
+        self.offline
+            .download_track(&self.http_client, &self.innertube, track)
+            .await
+    }
+
+    pub fn is_track_downloaded(&self, video_id: &str) -> bool {
+        self.offline.is_downloaded(video_id)
+    }
+
+    pub fn list_downloaded_tracks(&self) -> Vec<Track> {
+        self.offline.list_downloaded_tracks()
+    }
+
+    pub fn delete_downloaded_track(&self, video_id: &str) -> Result<(), std::io::Error> {
+        self.offline.delete_track(video_id)
+    }
+
     pub async fn enqueue(&self, track: Track) {
         self.queue.lock().await.push_back(track);
     }
@@ -234,7 +264,6 @@ impl AudioEngine {
             self.play_track(track.clone()).await?;
             Ok(Some(track))
         } else if self.repeat_mode.load(Ordering::Acquire) == 1 {
-            // Repeat all: restore queue from history
             let mut hist = self.history.lock().await;
             if !hist.is_empty() {
                 let mut q = self.queue.lock().await;
@@ -260,14 +289,12 @@ impl AudioEngine {
         };
 
         if let Some(track) = prev_track {
-            // Put current track back in front of queue
             if let Some(curr) = self.current_track.lock().await.take() {
                 self.queue.lock().await.push_front(curr);
             }
             self.play_track(track.clone()).await?;
             Ok(Some(track))
         } else {
-            // Restart current track from beginning
             self.position_ms.store(0, Ordering::Release);
             Ok(self.current_track().await)
         }

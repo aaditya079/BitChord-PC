@@ -35,6 +35,8 @@ export function useAudioEngine() {
   const [isLoadingLyrics, setIsLoadingLyrics] = useState<boolean>(false);
   const [repeatMode, setRepeatModeState] = useState<number>(0);
   const [isShuffle, setIsShuffleState] = useState<boolean>(false);
+  const [downloadedTracks, setDownloadedTracks] = useState<Track[]>([]);
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
 
   // Sync queue from backend
   const refreshQueue = useCallback(async () => {
@@ -43,6 +45,16 @@ export function useAudioEngine() {
       setQueue(q);
     } catch (err) {
       console.error('Failed to get queue:', err);
+    }
+  }, []);
+
+  // Sync downloaded offline tracks
+  const refreshDownloaded = useCallback(async () => {
+    try {
+      const tracks = await invoke<Track[]>('get_downloaded_tracks');
+      setDownloadedTracks(tracks);
+    } catch (err) {
+      console.error('Failed to get downloaded tracks:', err);
     }
   }, []);
 
@@ -59,6 +71,11 @@ export function useAudioEngine() {
       setIsLoadingLyrics(false);
     }
   }, []);
+
+  // Initial load
+  useEffect(() => {
+    refreshDownloaded();
+  }, [refreshDownloaded]);
 
   // Track progress event listener
   useEffect(() => {
@@ -87,7 +104,6 @@ export function useAudioEngine() {
       setDurationMs(track.duration_secs * 1000);
       await invoke('play_track', { track });
       await refreshQueue();
-      // Fetch lyrics concurrently
       if (track.artists.length > 0) {
         fetchLyrics(track.artists[0], track.title);
       }
@@ -214,6 +230,32 @@ export function useAudioEngine() {
     }
   }, []);
 
+  const downloadTrack = useCallback(async (track: Track) => {
+    const id = track.video_id;
+    setDownloadingIds((prev) => new Set(prev).add(id));
+    try {
+      await invoke('download_track', { track });
+      await refreshDownloaded();
+    } catch (err) {
+      console.error('Failed to download track:', err);
+    } finally {
+      setDownloadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [refreshDownloaded]);
+
+  const deleteDownloadedTrack = useCallback(async (videoId: string) => {
+    try {
+      await invoke('delete_downloaded_track', { videoId });
+      await refreshDownloaded();
+    } catch (err) {
+      console.error('Failed to delete downloaded track:', err);
+    }
+  }, [refreshDownloaded]);
+
   return {
     currentTrack,
     isPlaying,
@@ -227,6 +269,8 @@ export function useAudioEngine() {
     isLoadingLyrics,
     repeatMode,
     isShuffle,
+    downloadedTracks,
+    downloadingIds,
     playTrack,
     togglePlayback,
     setVolume,
@@ -238,5 +282,8 @@ export function useAudioEngine() {
     skipPrevious,
     setRepeatMode,
     toggleShuffle,
+    downloadTrack,
+    deleteDownloadedTrack,
+    refreshDownloaded,
   };
 }

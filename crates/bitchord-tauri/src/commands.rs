@@ -148,3 +148,26 @@ pub async fn sync_ambient_rgb(r: u8, g: u8, b: u8) -> Result<(), String> {
     OpenRgbClient::sync_color(RgbColor::new(r, g, b)).await;
     Ok(())
 }
+
+// Offline Library Commands
+#[tauri::command]
+pub async fn download_track(state: State<'_, AppState>, track: TrackDto) -> Result<(), String> {
+    let t = Track::from(track);
+    state.engine.download_track(&t).await
+}
+
+#[tauri::command]
+pub async fn is_track_downloaded(state: State<'_, AppState>, video_id: String) -> Result<bool, String> {
+    Ok(state.engine.is_track_downloaded(&video_id))
+}
+
+#[tauri::command]
+pub async fn get_downloaded_tracks(state: State<'_, AppState>) -> Result<Vec<TrackDto>, String> {
+    let tracks = state.engine.list_downloaded_tracks();
+    Ok(tracks.into_iter().map(TrackDto::from).collect())
+}
+
+#[tauri::command]
+pub async fn delete_downloaded_track(state: State<'_, AppState>, video_id: String) -> Result<(), String> {
+    state.engine.delete_downloaded_track(&video_id).map_err(|e| e.to_string())
+}

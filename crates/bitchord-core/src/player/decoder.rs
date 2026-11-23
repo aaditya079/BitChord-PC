@@ -1,10 +1,9 @@
-use crate::stream::buffer::StreamBuffer;
 use std::time::Duration;
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use thiserror::Error;
@@ -32,8 +31,8 @@ pub struct AudioDecoder {
 }
 
 impl AudioDecoder {
-    pub fn new(stream_buffer: StreamBuffer, codec_hint: &str) -> Result<Self, DecoderError> {
-        let mss = MediaSourceStream::new(Box::new(stream_buffer), Default::default());
+    pub fn new<T: MediaSource + 'static>(source: T, codec_hint: &str) -> Result<Self, DecoderError> {
+        let mss = MediaSourceStream::new(Box::new(source), Default::default());
 
         let mut hint = Hint::new();
         if codec_hint == "opus" {
