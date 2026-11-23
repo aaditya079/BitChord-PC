@@ -44,6 +44,10 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
+- [x] 03-01: Native Queue & Auto-Advance Engine in Rust Core
+- [x] 03-02: Full-Screen Immersive Listening View & Synced Karaoke Lyrics
+
+Plans:
 - [x] 02-01: Tauri v2 Workspace Scaffold & Rust IPC Bridge
 - [x] 02-02: Vite + React Liquid Glass UI & Audio Controls
 
@@ -58,6 +62,10 @@ Plans:
   2. Synced lyrics scroll smoothly with active line emphasis in real-time.
   3. Up-next queue supports reordering, removing, and quick adding tracks.
 **Plans**: 2 plans
+
+Plans:
+- [x] 03-01: Native Queue & Auto-Advance Engine in Rust Core
+- [x] 03-02: Full-Screen Immersive Listening View & Synced Karaoke Lyrics
 
 ---
 
