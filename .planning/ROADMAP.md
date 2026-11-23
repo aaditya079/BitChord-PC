@@ -44,8 +44,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: Tauri v2 Workspace Scaffold & Rust IPC Bridge
-- [ ] 02-02: Vite + React Liquid Glass UI & Audio Controls
+- [x] 02-01: Tauri v2 Workspace Scaffold & Rust IPC Bridge
+- [x] 02-02: Vite + React Liquid Glass UI & Audio Controls
 
 ---
 
