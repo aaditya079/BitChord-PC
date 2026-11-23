@@ -6,7 +6,7 @@ A 5-phase greenfield journey building a clean-slate, high-performance BitChord d
 
 ## Phases
 
-- [ ] **Phase 1: Rust Audio Engine & Innertube Streaming Pipeline** - Build standalone Rust streaming core, chunk buffer, and YouTube deciphering pipeline.
+- [x] **Phase 1: Rust Audio Engine & Innertube Streaming Pipeline** - Build standalone Rust streaming core, chunk buffer, and YouTube deciphering pipeline.
 - [ ] **Phase 2: Tauri v2 Scaffold & Liquid Glass UI** - Initialize Tauri v2 shell, custom window decorations, now-playing bar, and home feed.
 - [ ] **Phase 3: Player Controls, Synced Lyrics & Queue Management** - Implement expanded now-playing view, lyrics sync engine, and queue manager.
 - [ ] **Phase 4: OS Integrations & Ambient Lighting** - Wire Windows SMTC, Discord Rich Presence, global media hotkeys, and RGB hardware sync.
@@ -27,9 +27,9 @@ A 5-phase greenfield journey building a clean-slate, high-performance BitChord d
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Workspace Scaffold & Innertube Client with Challenge Solver
-- [ ] 01-02: Zero-Copy Chunk Downloader & Adaptive Range Buffering
-- [ ] 01-03: Real-Time Non-Blocking Audio Pipeline (symphonia + cpal + rtrb)
+- [x] 01-01: Workspace Scaffold & Innertube Client with Challenge Solver
+- [x] 01-02: Zero-Copy Chunk Downloader & Adaptive Range Buffering
+- [x] 01-03: Real-Time Non-Blocking Audio Pipeline (symphonia + cpal + rtrb)
 
 ---
 
