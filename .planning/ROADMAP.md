@@ -1,22 +1,11 @@
-# Roadmap: BitChord PC v3
+# Project Roadmap: BitChord PC v3
 
 ## Overview
-
-A 5-phase greenfield journey building a clean-slate, high-performance BitChord desktop client on Tauri v2 and pure Rust. From core audio streaming architecture up to animated liquid glass UI, OS-level integrations, and offline library sync.
-
-## Phases
-
-- [x] **Phase 1: Rust Audio Engine & Innertube Streaming Pipeline** - Build standalone Rust streaming core, chunk buffer, and YouTube deciphering pipeline.
-- [ ] **Phase 2: Tauri v2 Scaffold & Liquid Glass UI** - Initialize Tauri v2 shell, custom window decorations, now-playing bar, and home feed.
-- [ ] **Phase 3: Player Controls, Synced Lyrics & Queue Management** - Implement expanded now-playing view, lyrics sync engine, and queue manager.
-- [ ] **Phase 4: OS Integrations & Ambient Lighting** - Wire Windows SMTC, Discord Rich Presence, global media hotkeys, and RGB hardware sync.
-- [ ] **Phase 5: Offline Library Sync & Production Release** - Add batch downloader, local tagger, offline playback, and CI/CD release workflow.
+A high-performance desktop client for BitChord, completely independent of legacy `ytm-rs` codebase. Built on a modular Rust workspace (audio core + Tauri v2) with an Apple Music-grade liquid glass UI.
 
 ---
 
-## Phase Details
-
-### Phase 1: Rust Audio Engine & Innertube Streaming Pipeline
+### Phase 1: Audio Core & Innertube Streaming Pipeline
 **Goal**: Establish a bulletproof, gapless audio player and YouTube stream resolver in Rust with zero external UI dependencies.
 **Depends on**: Nothing (Phase 1)
 **Requirements**: AUDIO-01, AUDIO-02, AUDIO-03, AUDIO-04, YT-01, YT-02, YT-03
@@ -42,10 +31,6 @@ Plans:
   2. Floating now-playing bar displays live track info with playback controls bound to the Rust audio engine.
   3. Home feed browses charts, search results, and album pages smoothly with lazy-loaded art.
 **Plans**: 2 plans
-
-Plans:
-- [x] 03-01: Native Queue & Auto-Advance Engine in Rust Core
-- [x] 03-02: Full-Screen Immersive Listening View & Synced Karaoke Lyrics
 
 Plans:
 - [x] 02-01: Tauri v2 Workspace Scaffold & Rust IPC Bridge
@@ -79,6 +64,10 @@ Plans:
   3. Keyboard and case RGB dynamically shifts to match primary palette colors of current album art.
 **Plans**: 2 plans
 
+Plans:
+- [x] 04-01: Windows SMTC Media Keys & Discord Rich Presence
+- [x] 04-02: OpenRGB Ambient Lighting & Dynamic Palette Extractor
+
 ---
 
 ### Phase 5: Offline Library Sync & Production Release
@@ -90,3 +79,7 @@ Plans:
   2. App functions seamlessly without internet connection, playing all locally cached files.
   3. Automated build scripts produce signed/portable Windows `.exe` and `.msi` installers.
 **Plans**: 2 plans
+
+Plans:
+- [ ] 05-01: Offline Track Downloader & Local Tagged Storage
+- [ ] 05-02: Release Installer Bundler (WiX MSI & NSIS Setup)
