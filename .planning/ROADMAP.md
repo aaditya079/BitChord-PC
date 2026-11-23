@@ -43,6 +43,10 @@ Plans:
   3. Home feed browses charts, search results, and album pages smoothly with lazy-loaded art.
 **Plans**: 2 plans
 
+Plans:
+- [ ] 02-01: Tauri v2 Workspace Scaffold & Rust IPC Bridge
+- [ ] 02-02: Vite + React Liquid Glass UI & Audio Controls
+
 ---
 
 ### Phase 3: Player Controls, Synced Lyrics & Queue Management
