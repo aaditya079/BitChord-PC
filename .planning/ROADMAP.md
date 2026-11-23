@@ -24,7 +24,12 @@ A 5-phase greenfield journey building a clean-slate, high-performance BitChord d
   1. Rust unit tests verify playback of 48kHz Opus and 44.1kHz AAC streams through `cpal`/`symphonia`.
   2. Range-based chunk downloader streams uninterrupted without 403 throttling or stalls.
   3. YouTube Innertube client successfully resolves search queries, playlists, and COPPA/kids tracks.
-**Plans**: 3 plans (TBD during plan-phase)
+**Plans**: 3 plans
+
+Plans:
+- [ ] 01-01: Workspace Scaffold & Innertube Client with Challenge Solver
+- [ ] 01-02: Zero-Copy Chunk Downloader & Adaptive Range Buffering
+- [ ] 01-03: Real-Time Non-Blocking Audio Pipeline (symphonia + cpal + rtrb)
 
 ---
 
