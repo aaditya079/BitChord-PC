@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎵 BitChord PC (v3)
+# BitChord PC (v3)
 
 **Next-generation, high-performance desktop YouTube Music player.**  
 *Pure Rust audio core • Tauri v2 • React 18 & TypeScript • Liquid Glass Aesthetics • Zero Bloat*
@@ -16,7 +16,7 @@
 
 ---
 
-## ⚡ Why BitChord PC v3?
+## Why BitChord PC v3?
 
 BitChord PC v3 is a **ground-up clean-slate rewrite** engineered to replace legacy Electron wrappers and uncredited forks with an ultra-lightweight, memory-efficient, native architecture.
 
@@ -28,19 +28,19 @@ BitChord PC v3 is a **ground-up clean-slate rewrite** engineered to replace lega
 
 ---
 
-## ✨ Features
+## Features
 
-- 🎧 **High-Fidelity Audio**: Native 48kHz Opus & AAC on-the-fly stream demuxing and decoding via Symphonia.
-- 📜 **Synchronized Karaoke Lyrics**: Real-time timestamped LRC parsing with fluid auto-scroll and line highlighting.
-- 📴 **Complete Offline Library**: 1-click downloads saving Opus audio and companion metadata directly to local storage (`%LOCALAPPDATA%/BitChord/library`) for zero-latency, offline listening.
-- ⌨️ **Hardware Media Keys**: Windows global media keys support (`VK_MEDIA_PLAY_PAUSE`, `VK_MEDIA_NEXT_TRACK`, `VK_MEDIA_PREV_TRACK`, `VK_MEDIA_STOP`) via native Win32 `RegisterHotKey`.
-- 💬 **Discord Rich Presence**: Asynchronous native IPC client connecting directly over Windows named pipe (`\\.\pipe\discord-ipc-0`) without heavy external SDKs.
-- 💡 **OpenRGB Dynamic Ambient Lighting**: Dynamic dominant color extraction from album artwork synced directly to RGB keyboards, mice, and chassis over TCP port 6742.
-- 🔀 **Queue Engine**: Fast lock-free queue with repeat modes (Off, All, Single), shuffle, and automatic background advance.
+- **High-Fidelity Audio**: Native 48kHz Opus & AAC on-the-fly stream demuxing and decoding via Symphonia.
+- **Synchronized Karaoke Lyrics**: Real-time timestamped LRC parsing with fluid auto-scroll and line highlighting.
+- **Complete Offline Library**: 1-click downloads saving Opus audio and companion metadata directly to local storage (`%LOCALAPPDATA%/BitChord/library`) for zero-latency, offline listening.
+- **Hardware Media Keys**: Windows global media keys support (`VK_MEDIA_PLAY_PAUSE`, `VK_MEDIA_NEXT_TRACK`, `VK_MEDIA_PREV_TRACK`, `VK_MEDIA_STOP`) via native Win32 `RegisterHotKey`.
+- **Discord Rich Presence**: Asynchronous native IPC client connecting directly over Windows named pipe (`\\.\pipe\discord-ipc-0`) without heavy external SDKs.
+- **OpenRGB Dynamic Ambient Lighting**: Dynamic dominant color extraction from album artwork synced directly to RGB keyboards, mice, and chassis over TCP port 6742.
+- **Queue Engine**: Fast lock-free queue with repeat modes (Off, All, Single), shuffle, and automatic background advance.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 BitChord-PC-v3/
@@ -59,7 +59,7 @@ BitChord-PC-v3/
 
 ---
 
-## 🚀 Building from Source
+## Building from Source
 
 ### Prerequisites
 1. **Rust**: 1.80 or newer ([rustup.rs](https://rustup.rs/))
@@ -91,7 +91,7 @@ The compiled standalone binary will be generated at:
 
 ---
 
-## 📊 Benchmark & Invariants
+## Benchmark & Invariants
 
 | Metric | BitChord PC v3 | Typical Electron Player |
 |---|---|---|
@@ -103,12 +103,12 @@ The compiled standalone binary will be generated at:
 
 ---
 
-## 📜 Credits & Transparency
+## Credits & Transparency
 
-- Built with love for the BitChord community by **Aadi** ([@aaditya079](https://github.com/aaditya079)).
+- Built for the BitChord community by **Aadi** ([@aaditya079](https://github.com/aaditya079)).
 - Respecting open-source integrity: BitChord PC v3 is an original, clean-room implementation giving full credit to the original creators and contributors.
 
 ---
 
-## 📄 License
+## License
 MIT License. See [LICENSE](LICENSE) for details.
