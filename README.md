@@ -36,15 +36,15 @@ BitChord PC is built upon the extraordinary contributions of the open-source com
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/readme/screenshot-1.png" alt="Full player with artwork, lyrics and controls"></td>
-    <td width="50%"><img src="docs/readme/screenshot-2.png" alt="Browse view with shelves and playback controls"></td>
+    <td width="50%"><img src="docs/readme/screenshot-1.jpg" alt="Full player with artwork, lyrics and controls"></td>
+    <td width="50%"><img src="docs/readme/screenshot-2.jpg" alt="Browse view with shelves and playback controls"></td>
   </tr>
   <tr>
     <td align="center"><b>Player</b> — artwork, lyrics, queue and playback in one view</td>
     <td align="center"><b>Browse</b> — your music, shelves and navigation</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/readme/screenshot-3.png" alt="BitChord interface and playback" width="100%"></td>
+    <td colspan="2"><img src="docs/readme/screenshot-3.jpg" alt="BitChord interface and playback" width="100%"></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><b>Desktop experience</b> — native UI, fast playback, and quality controls</td>
