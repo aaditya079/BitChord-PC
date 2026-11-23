@@ -479,7 +479,7 @@ void main(){
   }));
 
   /* ---------------- live GitHub data ---------------- */
-  const REPO = "grapedjuice/ytm-rs";
+  const REPO = "aaditya079/BitChord-PC";
   const cached = (key, url) => {
     try {
       const hit = JSON.parse(sessionStorage.getItem(key) || "null");
