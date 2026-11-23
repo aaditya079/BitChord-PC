@@ -29,7 +29,7 @@ pub const APP_NAME: &str = "BitChord PC";
 pub const STATUS_QUALITY: &str = "{status} · {quality}";
 
 /// The fork's own page, for the card's project button and Settings' example song.
-pub const PROJECT_URL: &str = "https://github.com/LoserDenji/Bitchord-Desktop-Revived";
+pub const PROJECT_URL: &str = "https://github.com/aaditya079/BitChord-PC";
 /// What the project button says; Discord caps button labels at 32 characters.
 pub const PROJECT_BUTTON: &str = "Get BitChord PC";
 

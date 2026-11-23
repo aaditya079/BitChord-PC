@@ -26,7 +26,7 @@ const MAX_GIF: usize = 4 * 1024 * 1024;
 const MAX_IMAGE: usize = 16 * 1024 * 1024;
 const MAX_CLIP: usize = 24 * 1024 * 1024;
 const RETRY: Duration = Duration::from_secs(600);
-const ASSETS: &str = "https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/site/discord";
+const ASSETS: &str = "https://raw.githubusercontent.com/aaditya079/BitChord-PC/main/site/discord";
 const STATUS_RENDERER: &str = "https://kroki.io/graphviz/png";
 // Material icons (Apache-2.0) keep play and pause distinct during an asset outage.
 const PLAY_FALLBACK: &str =

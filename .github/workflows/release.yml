@@ -11,6 +11,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish to (e.g. v2.1.0)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -203,7 +208,7 @@ jobs:
           if-no-files-found: error
 
   attach:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     steps:
@@ -216,11 +221,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           ls -l files
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" files/* --clobber
-            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG=$(gh release list --limit 1 | awk '{print $1}')
+          fi
+          echo "Target tag: $TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" files/* --clobber
+            gh release edit "$TAG" --draft=false --latest
           else
-            gh release create "$GITHUB_REF_NAME" files/* --draft --title "bitchord ${GITHUB_REF_NAME#v}" --notes ""
+            gh release create "$TAG" files/* --title "bitchord ${TAG#v}" --notes "Automated release build."
           fi

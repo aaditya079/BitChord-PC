@@ -1683,9 +1683,15 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
             }
             match tab {
                 LibTab::Playlists => {
-                    if pill(ui, "New playlist", None, false).clicked() {
-                        app.actions.push(Action::NewPlaylist(Vec::new()));
-                    }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if pill(ui, "New playlist", None, false).clicked() {
+                            app.actions.push(Action::NewPlaylist(Vec::new()));
+                        }
+                        if pill(ui, "Import from Spotify", Some(icon::UPLOAD), false).clicked() {
+                            app.actions.push(Action::Go(Page::Transfer));
+                        }
+                    });
                     ui.add_space(14.0);
                     let pinned = app.pinned.as_slice();
                     let order = super::collections::pinned_first(pinned, &lib.playlists, app.sorts.cards("playlists", &lib.playlists));
@@ -2408,6 +2414,10 @@ fn settings_equalizer(app: &mut App, ui: &mut Ui) {
                     app.eq_gains = g;
                     app.set_eq();
                 }
+                if app.eq_gains != [0.0; 10] && pill(ui, "Reset to Flat", None, false).clicked() {
+                    app.eq_gains = [0.0; 10];
+                    app.set_eq();
+                }
             });
             if filter_show(ui, "Equalizer bands bass mids treble frequency slider") {
                 divider(ui);
@@ -3063,11 +3073,27 @@ fn settings_updates(app: &mut App, ui: &mut Ui) {
             _ => format!("You're on {}. Checks run at launch and every six hours.", crate::update::current_version()),
         };
         let mut check = false;
+        let mut view_notes = false;
+        let update_ready = matches!(app.updater.as_ref().map(|u| u.state()), Some(State::Ready { .. }));
         setting_row(ui, "Check now", Some(&status), |ui| {
             ui.add_enabled_ui(super::updatable(), |ui| {
                 check = pill(ui, "Check for updates", None, false).clicked();
             });
+            if update_ready {
+                if pill(ui, "Restart to update", None, true).clicked() {
+                    app.restart_to_update(ui.ctx());
+                }
+            }
+            if pill(ui, "What's new", Some(icon::SPARKLES), false).clicked() {
+                view_notes = true;
+            }
         });
+        if view_notes {
+            app.notes_dialog = Some(super::notes::NotesDialog {
+                version: crate::update::current_version(),
+                ready: false,
+            });
+        }
         if check {
             if let Some(u) = &app.updater {
                 u.set_nightly(app.update_nightly);

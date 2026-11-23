@@ -28,7 +28,7 @@ const UNISON_API: &str = "https://unison.betterlyrics.org/lyrics";
 const LRCRED_API: &str = "https://lrc.red/";
 
 /// lrc.red's free API asks callers to identify themselves with a link.
-const LRCRED_UA: &str = concat!("BitChord/", env!("CARGO_PKG_VERSION"), " (+https://github.com/LoserDenji/Bitchord-Desktop-Revived)");
+const LRCRED_UA: &str = concat!("BitChord/", env!("CARGO_PKG_VERSION"), " (+https://github.com/aaditya079/BitChord-PC)");
 
 /// One source of lyrics, in the extension's default priority order (its
 /// `PROVIDER_CONFIGS`, without the two YouTube sources; the ones past the stream
