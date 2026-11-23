@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/bitchord-core",
+    "crates/bitchord-tauri",
 ]
 resolver = "2"
 

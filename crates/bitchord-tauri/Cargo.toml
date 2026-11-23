@@ -1,0 +1,20 @@
+[package]
+name = "bitchord-tauri"
+version = "3.0.0"
+description = "BitChord Desktop Client (Tauri v2 + Pure Rust Core)"
+authors = ["Aaditya Srinivasan <aaditya@bitchord.org>", "BitChord Contributors"]
+edition = "2021"
+license = "GPL-3.0-only"
+
+[dependencies]
+bitchord-core = { path = "../bitchord-core" }
+tauri = { version = "2.1", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.42", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+window-vibrancy = "0.5"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }

@@ -24,6 +24,11 @@ pub struct CpalAudioSink {
     pub channels: u16,
 }
 
+// Stream is kept solely to maintain the active WASAPI output session lifecycle.
+// All runtime audio control and feeding is mediated via atomics and lock-free SPSC queues.
+unsafe impl Send for CpalAudioSink {}
+unsafe impl Sync for CpalAudioSink {}
+
 impl CpalAudioSink {
     /// Creates the sink and returns `(CpalAudioSink, Producer<f32>)`.
     /// The `Producer<f32>` is `Send` and passed to the audio decoder pump thread.
