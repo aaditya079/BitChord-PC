@@ -1888,7 +1888,6 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         setting_row(ui, "Power saver / Disable background blur", Some("Replaces intensive GPU shader blur effects with a clean static ambient tint. Drastically reduces GPU usage, heat and battery consumption on integrated GPUs."), |ui| {
             toggle(ui, &mut app.disable_blur, "Power saver / Disable background blur");
         });
-        });
         divider(ui);
         setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this PC works, e.g. one made for your language."), |ui| {
             if let Some(name) = font_picker(ui) {
