@@ -322,6 +322,9 @@ impl App {
             Resp::Art { key, art } => {
                 if self.mix_hold().is_none() && self.current_id() == Some(key.as_str()) {
                     self.accent = art.accent;
+                    if self.sync_rgb {
+                        crate::lighting::sync_ambient_rgb(art.accent);
+                    }
                     if let Some(bg) = &self.bg {
                         bg.set_art(art);
                     }
