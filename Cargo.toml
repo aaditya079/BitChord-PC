@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/bitchord-core",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
