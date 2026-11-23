@@ -3,9 +3,9 @@ name = "bitchord"
 version = "2.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
+authors = ["grapedjuice", "Kushagra Singh", "Aaditya Srinivasan"]
 repository = "https://github.com/aaditya079/BitChord-PC"
 description = "Native BitChord desktop client — Community Continued"
-authors = ["grapedjuice", "Kushagra Singh", "Aaditya Srinivasan"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -13,21 +13,34 @@ base64 = "0.22.1"
 bytes = "1.12.1"
 crossbeam-channel = "0.5.17"
 directories = "6.0.0"
+# How full the disks are (Settings › Storage's overall cards).
+fs4 = "1.1.0"
 discord-rich-presence = "1.1.0"
 eframe = { version = "0.37", default-features = false, features = ["glow", "wgpu_no_default_features", "default_fonts", "links", "clipboard", "accesskit", "persistence", "wayland", "x11"] }
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 egui_extras = { version = "0.37.0", default-features = false, features = ["image"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["humantime"] }
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 # Dolby Atmos from hi-res addons: E-AC-3 JOC decoded to stereo (dash.rs).
 filmcraft-ac3 = "0.9.0"
+# Apple's motion sleeves (motion.rs): their H.264, decoded on the CPU on every platform.
+openh264 = "0.8"
 localzone = "0.3.1"
 log = "0.4.34"
 memmap2 = "0.9.11"
+miniz_oxide = "0.9.1"
 raw-window-handle = "0.6"
-reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "json", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "json", "socks", "multipart"] }
+# Reading app.ron the way eframe does, to tell a good copy from a broken one (main.rs).
+ron = "0.12"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-flac", "symphonia-alac", "symphonia-wav", "symphonia-mp3", "symphonia-vorbis"] }
+# The music providers (providers.rs): JioSaavn's links hide behind DES-ECB, and the
+# TrackMatcher port reads the patterns Mochy's modules match with. "alloc" turns on
+# cipher's Vec-based padded helpers, which nothing outside Linux was guaranteeing.
+regex = "1"
+des = "0.8"
+ecb = { version = "0.1", features = ["alloc"] }
 rquickjs = "0.14.0"
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -49,24 +62,33 @@ tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
 mp4ameta = "0.13.0"
 md-5 = "0.10"
 unicode-normalization = "0.1.26"
-symphonia = { version = "0.5.5", default-features = false, features = ["mkv", "isomp4", "flac"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["mkv", "isomp4", "flac", "aac"] }
 rusty-opus = "1.0.2"
 unicode-bidi = "0.3"
+# Cutting the tray menu's song line between letters a reader sees as one (tray.rs).
+unicode-segmentation = "1.13.3"
 
 [target.'cfg(windows)'.dependencies]
 # Windows Credential Manager, for the Google and Spotify sign-ins.
 keyring = { version = "3.6.3", features = ["windows-native"] }
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The Secret Service (GNOME Keyring, KWallet) for the sign-ins.
 keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }
 # The tray icon needs GTK running on a thread of its own.
 gtk = "0.18"
+# The desktop's light or dark style from the settings portal (theme.rs); souvlaki's
+# MPRIS uses it already.
+dbus = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The login Keychain for the sign-ins.
 keyring = { version = "3.6.3", features = ["apple-native"] }
+# The window's traffic lights on the app's own top row (ui/titlebar.rs).
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSGeometry", "NSString", "NSUserDefaults"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -86,3 +108,8 @@ opt-level = 2
 
 [build-dependencies]
 winresource = "0.1.31"
+
+# souvlaki with its Linux media controls sending changes as they happen, not one a
+# second (#144): see the ytm-rs notes in vendor/souvlaki/src/platform/mpris/dbus/controls.rs.
+[patch.crates-io]
+souvlaki = { path = "vendor/souvlaki" }

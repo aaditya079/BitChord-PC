@@ -8,9 +8,12 @@
 //! put in place by `install.sh` (an `install.txt` beside the binary) downloads the new
 //! tarball and renames the new binary over itself as it closes. On macOS, the copy
 //! installed from the disk image downloads the new one and puts the app from it in
-//! place of its own as it closes. Every platform has a portable build too (a
-//! `portable.txt` marker; inside the app bundle on macOS), which updates from the
-//! portable download. Dev builds never update themselves.
+//! place of its own as it closes. A copy from the Linux .deb (a `deb.txt` beside the
+//! binary, in /usr/lib/bitchord) can't replace itself: it only says a new version is
+//! out ([`State::Available`]), and the new .deb installs over it. The Arch package (a
+//! `pacman.txt` there instead) does the same with the new package. Every platform has
+//! a portable build too (a `portable.txt` marker; inside the app bundle on macOS),
+//! which updates from the portable download. Dev builds never update themselves.
 //!
 //! Release notes (the release's Markdown body) are kept per version: the one a check
 //! finds, and any other on request ([`Updater::notes`]), for the update dialog, the
@@ -20,6 +23,7 @@
 //! pretends to be that version; `YTM_UPDATE_DRYRUN=1` logs the install command
 //! instead of running it; `YTM_UPDATE_FEED=<url>` reads the latest release from there.
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -36,8 +40,11 @@ pub enum State {
     Idle,
     Checking,
     UpToDate,
+    /// A newer version is out, for a copy that can't install it itself (the .deb):
+    /// `url` is its .deb download.
+    Available { version: String, url: String },
     Downloading { version: String, percent: u8 },
-    /// `installer` is the setup exe, or for the portable build the new ytm-rs.exe.
+    /// `installer` is the setup exe, or for the portable build the new bitchord.exe.
     Ready { version: String, installer: PathBuf },
     Failed(String),
 }
@@ -48,12 +55,28 @@ pub struct Updater {
     dir: PathBuf,
     wake: Arc<dyn Fn() + Send + Sync>,
     notes: Notes,
-    /// Total downloads of every release asset: None until asked, Some(None) while fetching.
-    downloads: Arc<Mutex<Option<Option<u64>>>>,
+    /// The nightly channel, rather than stable.
+    nightly: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// What a nightly's version has between the base version and its build number.
+const NIGHTLY: &str = "-nightly.";
+
+/// The version this was built as: a nightly build adds its build number.
+pub fn build_version() -> String {
+    match option_env!("YTM_NIGHTLY").filter(|n| !n.is_empty()) {
+        Some(n) => format!("{}{NIGHTLY}{n}", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").to_owned(),
+    }
 }
 
 pub fn current_version() -> String {
-    std::env::var("YTM_UPDATE_AS").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned())
+    std::env::var("YTM_UPDATE_AS").unwrap_or_else(|_| build_version())
+}
+
+/// Whether `version` is a nightly build's.
+pub fn is_nightly(version: &str) -> bool {
+    version.contains(NIGHTLY)
 }
 
 /// Whether this copy was installed by the installer (which leaves its uninstaller
@@ -71,18 +94,78 @@ pub fn installed() -> bool {
     exe.parent().is_some_and(|d| d.join(marker).exists())
 }
 
-/// The `.app` bundle a binary is in (`X.app/Contents/MacOS/ytm-rs`).
+/// Whether this copy was installed from the .deb, which marks it with `deb.txt` beside
+/// the binary (/usr/lib/bitchord). Apt owns it, so it never replaces itself.
+pub fn deb() -> bool {
+    static DEB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEB.get_or_init(|| {
+        cfg!(target_os = "linux")
+            && std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("deb.txt").exists())).unwrap_or(false)
+    })
+}
+
+/// Whether this copy was installed from the Arch package, which marks it with
+/// `pacman.txt` beside the binary. Pacman owns it, so like the .deb it never
+/// replaces itself.
+pub fn pacman() -> bool {
+    static PACMAN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PACMAN.get_or_init(|| cfg!(target_os = "linux") && std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("pacman.txt").exists())).unwrap_or(false))
+}
+
+/// Whether a package manager owns this copy (the .deb or the Arch package): it only
+/// says a new version is out.
+pub fn packaged() -> bool {
+    deb() || pacman()
+}
+
+/// What to do with the new version, for a copy a package manager owns.
+pub fn package_step() -> &'static str {
+    if pacman() {
+        "Download the new package and install it over this one with sudo pacman -U."
+    } else {
+        "Download the new .deb and open it to install it over this one."
+    }
+}
+
+/// The `.app` bundle a binary is in (`bitchord.app/Contents/MacOS/bitchord`).
 fn bundle_of(exe: &Path) -> Option<&Path> {
     exe.ancestors().nth(3).filter(|a| a.extension().is_some_and(|x| x == "app"))
 }
 
-/// The release asset this copy updates from.
+/// A version as the .deb has it: a nightly (`2.0.2-nightly.20261114`) comes after its
+/// version there too (`2.0.2+nightly.20261114`).
+fn deb_version(version: &str) -> String {
+    version.replacen(NIGHTLY, "+nightly.", 1)
+}
+
+/// The Arch package's file, as linux/arch.sh builds it: pkgver can't have a hyphen, so
+/// a nightly (`2.0.2-nightly.20261114`) is `2.0.2.nightly.20261114`, which pacman puts
+/// after its version too.
+fn pacman_package(version: &str, arch: &str) -> String {
+    format!("bitchord-{}-1-{arch}.pkg.tar.zst", version.replace('-', "."))
+}
+
+/// The release asset this copy updates from. The release workflow names them as
+/// ytm-rs does: on Windows a setup exe and a portable zip (x64, plus `-arm64` builds
+/// cross-compiled on the x64 runner), on macOS a per-architecture dmg and portable
+/// zip, and on Linux an installer tarball (installed by `install.sh`), a `-portable-`
+/// one, a .deb and an Arch package; a copy a package manager owns instead points at
+/// the new package, which installs over it. A release without this asset yet reads as
+/// up to date, so a platform the workflow doesn't build (ARM64 Linux, say) just never
+/// updates.
 fn asset_name(version: &str) -> String {
     let portable = portable_dir().is_some();
     let arch = std::env::consts::ARCH;
+    if cfg!(target_os = "linux") && pacman() {
+        return pacman_package(version, arch);
+    }
+    if cfg!(target_os = "linux") && deb() {
+        let arch = if arch == "x86_64" { "amd64" } else if arch == "aarch64" { "arm64" } else { arch };
+        return format!("bitchord_{}_{arch}.deb", deb_version(version));
+    }
     if cfg!(target_os = "linux") {
         let kind = if portable { "portable-" } else { "" };
-        return format!("ytm-rs-{kind}{version}-linux-{arch}.tar.gz");
+        return format!("bitchord-{kind}{version}-linux-{arch}.tar.gz");
     }
     // ARM64 Windows builds have their own assets; x64 keeps the original names.
     let (suffix, setup) = if cfg!(target_os = "macos") {
@@ -90,7 +173,7 @@ fn asset_name(version: &str) -> String {
     } else {
         (if cfg!(target_arch = "aarch64") { "-arm64" } else { "" }.to_owned(), "exe")
     };
-    if portable { format!("ytm-rs-portable-{version}{suffix}.zip") } else { format!("ytm-rs-setup-{version}{suffix}.{setup}") }
+    if portable { format!("bitchord-portable-{version}{suffix}.zip") } else { format!("bitchord-setup-{version}{suffix}.{setup}") }
 }
 
 /// The portable build's folder: the download ships a `portable.txt` beside the exe
@@ -122,22 +205,49 @@ pub fn clean_portable() {
     }
 }
 
-/// `a` is newer than `b` (dotted numeric versions, a leading "v" ignored).
+/// `a` is newer than `b` (dotted numeric versions, a leading "v" ignored). A nightly
+/// (`2.0.2-nightly.20261114`) is built from main after that version's release, so it's
+/// newer than the release and older than the next one.
 pub fn newer(a: &str, b: &str) -> bool {
-    let parse = |v: &str| v.trim_start_matches('v').split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    let (a, b) = (parse(a), parse(b));
-    for i in 0..a.len().max(b.len()) {
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
-        if x != y {
-            return x > y;
+    let nums = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let parse = |v: &str| {
+        let v = v.trim_start_matches('v');
+        match v.split_once(NIGHTLY) {
+            Some((base, build)) => (nums(base), Some(nums(build))),
+            None => (nums(v), None),
         }
+    };
+    let cmp = |a: &[u64], b: &[u64]| {
+        (0..a.len().max(b.len())).map(|i| a.get(i).copied().unwrap_or(0).cmp(&b.get(i).copied().unwrap_or(0))).find(|o| o.is_ne()).unwrap_or(Ordering::Equal)
+    };
+    let (a, b) = (parse(a), parse(b));
+    match cmp(&a.0, &b.0) {
+        Ordering::Equal => match (a.1, b.1) {
+            (Some(x), Some(y)) => cmp(&x, &y).is_gt(),
+            (Some(_), None) => true,
+            _ => false,
+        },
+        o => o.is_gt(),
     }
-    false
 }
 
 impl Updater {
-    pub fn new(data_dir: &Path, wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { state: Arc::new(Mutex::new(State::Idle)), dir: data_dir.join("updates"), wake: Arc::new(wake), notes: Default::default(), downloads: Default::default() }
+    pub fn new(data_dir: &Path, nightly: bool, wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { state: Arc::new(Mutex::new(State::Idle)), dir: data_dir.join("updates"), wake: Arc::new(wake), notes: Default::default(), nightly: Arc::new(std::sync::atomic::AtomicBool::new(nightly)) }
+    }
+
+    /// Switch channel. What was found or downloaded for the other one is dropped; a
+    /// check under way starts over on the new channel when it ends.
+    pub fn set_nightly(&self, nightly: bool) {
+        if self.nightly.swap(nightly, std::sync::atomic::Ordering::Relaxed) == nightly {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if !matches!(*state, State::Checking | State::Downloading { .. }) {
+            *state = State::Idle;
+        }
+        drop(state);
+        (self.wake)();
     }
 
     pub fn state(&self) -> State {
@@ -182,43 +292,6 @@ impl Updater {
         None
     }
 
-    /// How many times ytm-rs has been downloaded: every release asset's GitHub download
-    /// count added up (installers, plus the copies the updater fetched). Fetched in the
-    /// background the first time it's asked for; `None` until it arrives.
-    pub fn downloads(&self) -> Option<u64> {
-        {
-            let mut d = self.downloads.lock().unwrap();
-            if let Some(n) = *d {
-                return n;
-            }
-            *d = Some(None);
-        }
-        let this = self.clone();
-        std::thread::spawn(move || {
-            let fetch = async {
-                let http = client()?;
-                let mut total = 0;
-                for page in 1.. {
-                    let releases: Vec<serde_json::Value> = http.get(format!("{ALL_RELEASES}?per_page=100&page={page}")).send().await?.error_for_status()?.json().await?;
-                    total += releases.iter().flat_map(|r| r["assets"].as_array().into_iter().flatten()).filter_map(|a| a["download_count"].as_u64()).sum::<u64>();
-                    if releases.len() < 100 {
-                        break;
-                    }
-                }
-                anyhow::Ok(total)
-            };
-            let total = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(anyhow::Error::from).and_then(|rt| rt.block_on(fetch));
-            match total {
-                Ok(n) => {
-                    *this.downloads.lock().unwrap() = Some(Some(n));
-                    (this.wake)();
-                }
-                Err(e) => log::warn!("update: download count: {e:#}"),
-            }
-        });
-        None
-    }
-
     /// Check for a newer release and download it, in the background.
     pub fn check(&self) {
         if matches!(self.state(), State::Checking | State::Downloading { .. } | State::Ready { .. }) {
@@ -231,27 +304,56 @@ impl Updater {
                 Ok(rt) => rt,
                 Err(e) => return this.set(State::Failed(e.to_string())),
             };
-            match rt.block_on(this.run()) {
-                Ok(s) => this.set(s),
-                Err(e) => {
-                    log::warn!("update check failed: {e:#}");
-                    this.set(State::Failed(format!("{e:#}")));
+            loop {
+                let nightly = this.nightly.load(std::sync::atomic::Ordering::Relaxed);
+                let result = rt.block_on(this.run(nightly));
+                // The channel changed while this ran: check again on the new one.
+                if this.nightly.load(std::sync::atomic::Ordering::Relaxed) != nightly {
+                    continue;
                 }
+                match result {
+                    Ok(s) => this.set(s),
+                    Err(e) => {
+                        log::warn!("update check failed: {e:#}");
+                        this.set(State::Failed(format!("{e:#}")));
+                    }
+                }
+                break;
             }
         });
     }
 
-    async fn run(&self) -> anyhow::Result<State> {
+    /// The release to update to from what the feed returned: a single release, or the
+    /// list of them, from which the newest stable one, or on the nightly channel the newest
+    /// stable or nightly one. Other prereleases (test builds) are never picked.
+    fn pick_release(feed: serde_json::Value, nightly: bool) -> Option<serde_json::Value> {
+        let serde_json::Value::Array(list) = feed else { return Some(feed) };
+        let tag = |r: &serde_json::Value| r["tag_name"].as_str().unwrap_or_default().to_owned();
+        list.into_iter()
+            .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+            .filter(|r| if r["prerelease"].as_bool().unwrap_or(false) { nightly && is_nightly(&tag(r)) } else { true })
+            .reduce(|best, r| if newer(&tag(&r), &tag(&best)) { r } else { best })
+    }
+
+    /// Whether `tag` is the one to install over `current`: newer, or on the stable channel,
+    /// the stable release in place of a nightly build.
+    fn wanted(tag: &str, current: &str, nightly: bool) -> bool {
+        newer(tag, current) || (!nightly && is_nightly(current) && !is_nightly(tag) && !tag.is_empty() && tag.trim_start_matches('v') != current)
+    }
+
+    async fn run(&self, nightly: bool) -> anyhow::Result<State> {
         let http = client()?;
-        let feed = std::env::var("YTM_UPDATE_FEED").unwrap_or_else(|_| LATEST.to_owned());
-        let release: serde_json::Value = http.get(feed).send().await?.error_for_status()?.json().await?;
+        // Nightlies are prereleases, which the latest release never is: they're in the list.
+        let feed = std::env::var("YTM_UPDATE_FEED").unwrap_or_else(|_| if nightly { format!("{ALL_RELEASES}?per_page=30") } else { LATEST.to_owned() });
+        let feed: serde_json::Value = http.get(feed).send().await?.error_for_status()?.json().await?;
+        let release = Self::pick_release(feed, nightly).ok_or_else(|| anyhow::anyhow!("no releases found"))?;
         let tag = release["tag_name"].as_str().unwrap_or_default();
         if let Some(body) = release["body"].as_str() {
             self.notes.lock().unwrap().insert(tag.trim_start_matches('v').to_owned(), Some(body.to_owned()));
         }
         let current = current_version();
-        if !newer(tag, &current) {
-            log::info!("update: {current} is current (latest {tag})");
+        if !Self::wanted(tag, &current, nightly) {
+            log::info!("update: {current} is current (latest {tag}, {} channel)", if nightly { "nightly" } else { "stable" });
             return Ok(State::UpToDate);
         }
         let version = tag.trim_start_matches('v').to_owned();
@@ -264,6 +366,13 @@ impl Updater {
             return Ok(State::UpToDate);
         };
         let url = asset["browser_download_url"].as_str().ok_or_else(|| anyhow::anyhow!("asset has no URL"))?;
+        // A copy a package manager owns (the .deb or the Arch package): apt or pacman
+        // own the files, so it doesn't download anything, it only points you at the new
+        // package to install over it.
+        if packaged() {
+            log::info!("update: {version} is out");
+            return Ok(State::Available { version, url: url.to_owned() });
+        }
         let size = asset["size"].as_u64().unwrap_or(0);
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(&want);
@@ -301,8 +410,9 @@ impl Updater {
                 }
             }
         }
-        let unpacked = self.dir.join(format!("ytm-rs-{version}"));
-        let ready = if cfg!(target_os = "macos") && !portable {
+        let unpacked = self.dir.join(format!("bitchord-{version}"));
+        let ready = if cfg!(target_os = "macos") {
+            // The macOS release ships a dmg (installed copies and portable ones alike).
             open_dmg(&path, &unpacked)?
         } else if portable || cfg!(unix) {
             unzip_exe(&path, &unpacked)?
@@ -337,9 +447,12 @@ impl Updater {
         // (and the installer will ask for admin rights); otherwise it's per-user.
         let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
         let scope = if program_files.is_some_and(|p| exe.starts_with(p)) { "/ALLUSERS" } else { "/CURRENTUSER" };
-        // Give this process a moment to save and exit before the installer replaces it.
+        // Give this process time to save and fully exit before the installer replaces
+        // it: under /VERYSILENT the installer's Restart Manager closes whatever is
+        // still holding files, and one caught mid-save leaves app.ron half-written
+        // (which reads at the next launch as settings wiped). Five beats of slack.
         let mut script = format!(
-            "ping -n 3 127.0.0.1 >NUL & \"{}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART {scope}",
+            "ping -n 6 127.0.0.1 >NUL & \"{}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART {scope}",
             installer.display()
         );
         if relaunch {
@@ -384,7 +497,7 @@ fn swap_exe(new: &Path, exe: &Path, relaunch: bool) {
 #[cfg(unix)]
 fn replace_binary(new: &Path, exe: &Path, relaunch: bool) {
     use std::os::unix::fs::PermissionsExt;
-    let tmp = exe.with_file_name(".ytm-rs.new");
+    let tmp = exe.with_file_name(".bitchord.new");
     if std::env::var_os("YTM_UPDATE_DRYRUN").is_some() {
         log::info!("update (dry run): {} over {}", new.display(), exe.display());
         return;
@@ -410,7 +523,7 @@ fn replace_binary(new: &Path, exe: &Path, relaunch: bool) {
 #[cfg(target_os = "macos")]
 fn replace_bundle(new: &Path, app: &Path, relaunch: bool) {
     let parent = app.parent().unwrap_or(Path::new("/"));
-    let (tmp, old) = (parent.join(".ytm-rs.app.new"), parent.join(".ytm-rs.app.old"));
+    let (tmp, old) = (parent.join(".bitchord.app.new"), parent.join(".bitchord.app.old"));
     if std::env::var_os("YTM_UPDATE_DRYRUN").is_some() {
         log::info!("update (dry run): {} in place of {}", new.display(), app.display());
         return;
@@ -448,15 +561,17 @@ fn open_dmg(dmg: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&mnt)?;
     let attached = std::process::Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-quiet", "-mountpoint"]).arg(&mnt).arg(dmg).status()?;
     anyhow::ensure!(attached.success(), "couldn't open {}", dmg.display());
-    let copied = std::process::Command::new("ditto").arg(mnt.join("ytm-rs.app")).arg(dir.join("ytm-rs.app")).status();
+    let copied = std::process::Command::new("ditto").arg(mnt.join("bitchord.app")).arg(dir.join("bitchord.app")).status();
     let _ = std::process::Command::new("hdiutil").args(["detach", "-quiet"]).arg(&mnt).status();
-    let exe = dir.join("ytm-rs.app/Contents/MacOS/ytm-rs");
+    let exe = dir.join("bitchord.app/Contents/MacOS/bitchord");
     anyhow::ensure!(copied.is_ok_and(|s| s.success()) && exe.exists(), "couldn't copy the app out of {}", dmg.display());
     Ok(exe)
 }
 
-/// The new binary from a downloaded update (the portable zip, or on Linux the
-/// tarball), unpacked into `dir` with tar (on Windows, its own; macOS's reads zips).
+/// The new binary from a downloaded update (the portable zip, or on Linux the tarball),
+/// unpacked into `dir` with tar (on Windows, its own). Both downloads keep everything
+/// one folder down (`BitChord\` in the zip, `bitchord-<version>-linux-x86_64/` in the
+/// tarball), so the binary is looked for at the top level and one level in.
 fn unzip_exe(zip: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
@@ -475,15 +590,21 @@ fn unzip_exe(zip: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let status = cmd.status()?;
+    // The binary at the top level of the unpacked download, or inside its single folder.
     #[cfg(windows)]
-    let exe = dir.join("ytm-rs.exe");
-    // Everything is in one top-level folder: the binary, or on macOS the app bundle.
+    let exe = std::fs::read_dir(dir)?
+        .flatten()
+        .map(|e| if e.path().is_dir() { e.path().join("bitchord.exe") } else { e.path() })
+        .find(|p| p.is_file() && p.file_name().is_some_and(|n| n == "bitchord.exe"))
+        .unwrap_or_else(|| dir.join("bitchord.exe"));
+    // On macOS the tarball would carry the app bundle; the release's downloads are
+    // tarballs on Linux and zips on Windows, so this branch sees `bitchord` binaries.
     #[cfg(not(windows))]
     let exe = std::fs::read_dir(dir)?
         .flatten()
-        .flat_map(|e| [e.path().join("ytm-rs"), e.path().join("ytm-rs.app/Contents/MacOS/ytm-rs")])
+        .flat_map(|e| [e.path().join("bitchord"), e.path().join("bitchord.app/Contents/MacOS/bitchord")])
         .find(|p| p.is_file())
-        .unwrap_or_else(|| dir.join("ytm-rs"));
+        .unwrap_or_else(|| dir.join("bitchord"));
     anyhow::ensure!(status.success() && exe.exists(), "couldn't unpack {}", zip.display());
     Ok(exe)
 }
@@ -510,12 +631,12 @@ fn run_detached(script: &str) {
 }
 
 fn client() -> anyhow::Result<reqwest::Client> {
-    Ok(crate::proxy::apply(reqwest::Client::builder()).user_agent(concat!("BitChord/", env!("CARGO_PKG_VERSION"))).connect_timeout(std::time::Duration::from_secs(10)).read_timeout(std::time::Duration::from_secs(30)).build()?)
+    Ok(crate::proxy::apply(reqwest::Client::builder()).user_agent(concat!("bitchord/", env!("CARGO_PKG_VERSION"))).connect_timeout(std::time::Duration::from_secs(10)).read_timeout(std::time::Duration::from_secs(30)).build()?)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::newer;
+    use super::{deb_version, newer, pacman_package};
 
     #[test]
     fn version_order() {
@@ -525,5 +646,45 @@ mod tests {
         assert!(!newer("v0.2.7", "0.2.7"));
         assert!(!newer("v0.2.6", "0.2.7"));
         assert!(!newer("", "0.2.7"));
+    }
+
+    #[test]
+    fn nightly_order() {
+        // A nightly is newer than its base release, and older than the next one.
+        assert!(newer("v2.0.2-nightly.20261114", "v2.0.2"));
+        assert!(!newer("v2.0.2", "v2.0.2-nightly.20261114"));
+        assert!(newer("v2.0.3", "v2.0.2-nightly.20261114"));
+        assert!(!newer("v2.0.2-nightly.20261114", "v2.0.2-nightly.20261115"));
+        assert!(newer("v2.0.2-nightly.20261115", "v2.0.2-nightly.20261114"));
+    }
+
+    #[test]
+    fn package_names() {
+        assert_eq!(deb_version("2.0.2"), "2.0.2");
+        assert_eq!(deb_version("2.0.2-nightly.20261114"), "2.0.2+nightly.20261114");
+        assert_eq!(pacman_package("2.0.2", "x86_64"), "bitchord-2.0.2-1-x86_64.pkg.tar.zst");
+        assert_eq!(pacman_package("2.0.2-nightly.20261114", "x86_64"), "bitchord-2.0.2.nightly.20261114-1-x86_64.pkg.tar.zst");
+        assert_eq!(pacman_package("2.0.2-nightly.20261114.2", "x86_64"), "bitchord-2.0.2.nightly.20261114.2-1-x86_64.pkg.tar.zst");
+    }
+
+    #[test]
+    fn channels() {
+        use super::{Updater, is_nightly};
+        use serde_json::json;
+        let r = |tag: &str, pre: bool| json!({ "tag_name": tag, "prerelease": pre, "draft": false });
+        let list = json!([r("test-wayland-tray-1", true), r("v2.0.2-nightly.20261114", true), r("v2.0.2", false), r("v2.0.1", false)]);
+        let tag = |nightly| Updater::pick_release(list.clone(), nightly).unwrap()["tag_name"].as_str().unwrap().to_owned();
+        assert_eq!(tag(false), "v2.0.2");
+        assert_eq!(tag(true), "v2.0.2-nightly.20261114");
+        // A stable release after the nightly wins on the nightly channel too.
+        let list = json!([r("v2.0.3", false), r("v2.0.2-nightly.20261114", true)]);
+        assert_eq!(Updater::pick_release(list, true).unwrap()["tag_name"], "v2.0.3");
+        // Back on stable from a nightly: the stable release, though older.
+        assert!(Updater::wanted("v2.0.2", "2.0.2-nightly.20261114", false));
+        assert!(!Updater::wanted("v2.0.2", "2.0.2-nightly.20261114", true));
+        assert!(!Updater::wanted("v2.0.2", "2.0.2", false));
+        assert!(Updater::wanted("v2.0.2-nightly.20261115", "2.0.2-nightly.20261114", true));
+        assert!(is_nightly("2.0.2-nightly.20261114"));
+        assert!(!is_nightly("2.0.2"));
     }
 }

@@ -28,6 +28,31 @@ pub enum BgMode {
     CoverFullbleed,
 }
 
+impl BgMode {
+    /// The mode's snake_case name, as a theme file writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Kawarp => "kawarp",
+            Self::CoverStatic => "cover_static",
+            Self::AccentGradient => "accent_gradient",
+            Self::Solid => "solid",
+            Self::CoverFullbleed => "cover_fullbleed",
+        }
+    }
+
+    /// The mode a theme file names, or `None` for one this build doesn't know.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "kawarp" => Self::Kawarp,
+            "cover_static" => Self::CoverStatic,
+            "accent_gradient" => Self::AccentGradient,
+            "solid" => Self::Solid,
+            "cover_fullbleed" => Self::CoverFullbleed,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct Background {
@@ -180,7 +205,9 @@ impl Default for LyricStyle {
             sung_color: "white".into(),
             blur: 2.0,
             blur_scope: BlurScope::Upcoming,
-            glow: 0.0,
+            // The sung word glows (am-lyrics' intensive look): held words ride this up
+            // to `long_word_glow_alpha`'s place, which the default look shares.
+            glow: 0.45,
             glow_color: "white".into(),
             active_scale: 1.05,
             lift: 3.0,

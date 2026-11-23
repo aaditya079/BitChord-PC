@@ -2,8 +2,11 @@
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 
+use super::row_drag;
 use super::widgets::{self, icon_at, icon_button, named, paint_cover, text_at};
 use super::{Action, App, LibTab, NpTab, Page, Repeat, fmt_time, glyphs};
+use super::lists::LIKED_MUSIC;
+use crate::backend::Req;
 use crate::model::Target;
 use crate::shader::Params;
 use crate::theme::{self, icon};
@@ -153,26 +156,34 @@ fn nav_bg(ui: &Ui, look: NavLook, rect: Rect, h: f32, s: f32) -> Color32 {
     }
 }
 
+/// A pinned playlist's pin leans over, like one stuck in a board.
+const PIN_TILT: f32 = 45.0;
+
 /// Sidebar width expanded and collapsed to an icon rail (points).
 pub const SIDEBAR_W: f32 = 236.0;
 pub const RAIL_W: f32 = 76.0;
 
 /// How collapsed the sidebar is, 0 (full) to 1 (icon rail), eased over the toggle.
 pub fn sidebar_collapse(app: &App, ctx: &egui::Context) -> f32 {
-    let t = ctx.animate_bool_with_time(egui::Id::unique("sidebar-collapse"), app.sidebar_collapsed, 0.28 * theme::SPEED);
+    let t = ctx.animate_bool_with_time(egui::Id::unique("sidebar-collapse"), app.sidebar_collapsed, 0.28 * theme::speed());
     // Ease in-out: starts and lands gently in both directions.
     t * t * (3.0 - 2.0 * t)
 }
 
-/// The small chevron that walks the page history, centred on `at`.
-fn history_button(ui: &mut Ui, at: Pos2, glyph: char, name: &str) -> bool {
-    let rect = Rect::from_center_size(at, Vec2::splat(22.0));
-    let resp = named(ui.interact(rect, ui.id().with(name), Sense::click()), name).on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand);
-    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
+/// One of the two chevrons that walk the page history, drawn into `rect` on the logo's
+/// line: right-aligned there when the sidebar is expanded, centred in the rail when it
+/// has collapsed (the logo has faded out by then). `enabled` dims a chevron whose
+/// direction has no pages to go to.
+fn history_button(ui: &mut Ui, rect: Rect, glyph: char, name: &str, enabled: bool) -> bool {
+    let resp = ui.interact(rect, egui::Id::unique("sidebar-history").with(name), Sense::click());
+    let resp = named(resp, name);
+    let resp = if enabled { resp.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
+    let h = if enabled { theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15) } else { 0.0 };
     if h > 0.0 {
         ui.painter().circle_filled(rect.center(), 11.0, theme::glass(0.10 * h));
     }
-    icon_at(ui, rect.center(), glyph, 16.0, theme::lerp_color(theme::text_dim(), theme::text(), h));
+    let ink = if enabled { theme::lerp_color(theme::text_dim(), theme::text(), h) } else { theme::with_alpha(theme::text_dim(), 0.45) };
+    icon_at(ui, rect.center(), glyph, 16.0, ink);
     resp.clicked()
 }
 
@@ -185,33 +196,43 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     // Labels fade out over the first two thirds of collapsing (and back in late).
     let a = ((1.0 - t) * 1.5 - 0.5).clamp(0.0, 1.0);
     // Content width when expanded: text keeps its truncation while the panel narrows.
-    let full_w = ui.available_width() + (SIDEBAR_W - RAIL_W) * t;
+    let w = ui.available_width();
+    let full_w = w + (SIDEBAR_W - RAIL_W) * t;
 
-    // The logo keeps the icon column at the very top in both states. The history pair
-    // rides its line at the right while expanded, and slides onto its own line under
-    // the logo as the rail narrows — the rail is too tight to carry all three across.
-    {
-        let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0 + 30.0 * t), Sense::hover());
-        let logo = Rect::from_min_size(hr.min + vec2(8.0, 0.0), vec2(32.0, 32.0));
-        // Full strength in both states: `a` is the label fade, and the rail has no labels to
-        // fade — tinting the mark by it left the collapsed sidebar with no logo at all.
-        mark(ui, Rect::from_center_size(logo.center(), vec2(30.0, 20.0)), theme::text());
-        let resp = named(ui.interact(logo, ui.id().with("sidebar-home"), Sense::click()), "Home");
+    // Logo, with the page history on its line. The chevron pair is placed by hand rather
+    // than laid out after the logo, so it can end up centred in the rail: it hugs the
+    // content's right edge when expanded (as flow layout gave it) and slides left as the
+    // panel narrows, landing in the middle of the collapsed rail, where the logo has
+    // faded out to make room. Laid out after the logo instead, both chevrons would end
+    // up past the rail's edge, the forward one entirely outside it.
+    let row_top = ui.cursor().top();
+    let row_left = ui.cursor().left();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(8.0);
+        let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+        app_logo(ui, r, theme::with_alpha(Color32::WHITE, a));
+        let resp = named(resp, "Home");
         let resp = if collapsed { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
         if resp.clicked() && !collapsed {
             app.actions.push(Action::Go(Page::Home));
         }
-        // Expanded the pair sits flush right on the logo's line; on the rail it slides
-        // to the icon column and down onto its own line below the logo.
-        let (x0, x1) = (hr.right() - 48.0, hr.left());
-        let x = x0 + (x1 - x0) * t;
-        let yc = hr.top() + 16.0 + 31.0 * t;
-        if history_button(ui, pos2(x + 11.0, yc), icon::CHEVRON_LEFT, "Back") {
-            app.nav_back();
-        }
-        if history_button(ui, pos2(x + 37.0, yc), icon::CHEVRON_RIGHT, "Forward") {
-            app.nav_forward();
-        }
+    });
+    // Two 22 pt chevrons and the 4 pt gap between them.
+    const PAIR_W: f32 = 48.0;
+    let right_x = full_w - PAIR_W;
+    let centre_x = ((w - PAIR_W) / 2.0).max(0.0);
+    let pair_x = right_x + (centre_x - right_x) * t;
+    let pair_y = row_top + 5.0;
+    let back_r = Rect::from_min_size(pos2(row_left + pair_x, pair_y), Vec2::splat(22.0));
+    let fwd_r = Rect::from_min_size(pos2(back_r.right() + 4.0, pair_y), Vec2::splat(22.0));
+    // Back also closes the now-playing overlay, so it's live whenever that is open.
+    let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
+    if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
+        app.nav_back();
+    }
+    if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
+        app.nav_forward();
     }
     ui.add_space(14.0);
 
@@ -241,7 +262,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     const LUCIDE: f32 = glyphs::LUCIDE_GLYPH;
     nav(ui, glyphs::SEARCH, APPLE, "Search", Page::Search(String::new()), matches!(p, Page::Search(_)), &mut go_to);
     nav(ui, glyphs::HOME, APPLE, "Home", Page::Home, p == Page::Home, &mut go_to);
-    nav(ui, glyphs::EXPLORE, APPLE, "New", Page::New, p == Page::New, &mut go_to);
+    nav(ui, glyphs::EXPLORE, APPLE, "New", Page::New, matches!(p, Page::New | Page::Mood(_)), &mut go_to);
     nav(ui, glyphs::LIBRARY, APPLE, "Library", Page::Library(LibTab::Playlists), matches!(p, Page::Library(_)), &mut go_to);
     nav(ui, glyphs::DOWNLOAD, APPLE, "Downloads", Page::Downloads, p == Page::Downloads, &mut go_to);
 
@@ -318,10 +339,20 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 Target::Playlist(id) => app.playlist_order.iter().position(|x| x == id).unwrap_or(usize::MAX),
                 _ => usize::MAX,
             });
-            let drag_key = egui::Id::new("sidebar-pl-drag");
+            // Pinned playlists come first, last pinned on top, over the manual order.
+            visible.sort_by_key(|c| match &c.target {
+                Target::Playlist(id) => app.pinned.iter().position(|p| p == id).unwrap_or(usize::MAX),
+                _ => usize::MAX,
+            });
+            let drag_key = egui::Id::unique("sidebar-pl-drag");
             let dragging: Option<String> = ui.data(|d| d.get_temp(drag_key));
             let down = ui.input(|i| i.pointer.any_down());
             let pointer = ui.input(|i| i.pointer.interact_pos());
+            // A song dragged out of a list goes into the playlist it's let go on: your own
+            // playlists (the ones "Add to playlist" offers) and Liked Music.
+            let accent = app.accent_color();
+            row_drag::scroll_targets(ui, &app.row_drag);
+            let mut song_dropped = None;
             for c in &visible {
                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click_and_drag());
                 let id = match &c.target {
@@ -330,6 +361,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 };
                 if !ui.is_rect_visible(rect) {
                     continue;
+                }
+                // A song held over this playlist, or let go on it.
+                let takes = id.starts_with("PL") || id == LIKED_MUSIC;
+                let over = if takes { row_drag::target(ui, &mut app.row_drag, rect) } else { None };
+                if let Some(row_drag::Over::Dropped(t)) = &over {
+                    song_dropped = Some((id.clone(), t.clone()));
                 }
                 let is_dragged = dragging.as_deref() == Some(id.as_str());
                 let mut resp = named(resp, &c.title).on_hover_cursor(if is_dragged { egui::CursorIcon::Grabbing } else { egui::CursorIcon::PointingHand });
@@ -350,8 +387,22 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 let selected = matches!(&c.target, Target::Playlist(id) if app.page == Page::Playlist(id.clone()));
                 let lift = if is_dragged { 0.10 } else { 0.0 };
                 ui.painter().rect_filled(rect, 8.0, theme::glass(0.05 * h + if selected { 0.08 } else { 0.0 } + lift));
+                if matches!(over, Some(row_drag::Over::Held)) {
+                    ui.painter().rect_filled(rect, 8.0, theme::with_alpha(accent, 0.18));
+                    ui.painter().rect_stroke(rect, 8.0, egui::Stroke::new(1.5, accent), egui::StrokeKind::Inside);
+                }
                 let img = Rect::from_center_size(pos2(rect.left() + ICON_X, rect.center().y), Vec2::splat(36.0));
                 paint_cover(ui, img, &c.thumbs, theme::thumb_radius(), 1.0);
+                if let Target::Album(id) | Target::Playlist(id) = &c.target {
+                    widgets::download_veil(ui, img, theme::thumb_radius(), id);
+                }
+                // Pinned: a badge on the cover's corner.
+                let pinned = app.pinned.contains(&id);
+                if pinned {
+                    let at = img.right_bottom() - vec2(1.0, 1.0);
+                    ui.painter().circle_filled(at, 8.0, theme::shade(0.8));
+                    widgets::icon_turned(ui, at, icon::PIN, 10.0, Color32::WHITE, PIN_TILT);
+                }
                 if a > 0.0 {
                     let w = full_w - 58.0;
                     text_at(ui, pos2(img.right() + 10.0, rect.top() + 7.0), &c.title, theme::semibold(13.5), theme::with_alpha(theme::text(), a), w);
@@ -359,6 +410,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 }
                 egui::Popup::context_menu(&resp).show(|ui| {
                     ui.set_min_width(190.0);
+                    if ui.button(if pinned { "Unpin playlist" } else { "Pin playlist" }).clicked() {
+                        app.actions.push(Action::Pin(id.clone(), !pinned));
+                        ui.close();
+                    }
                     if ui.button("Hide from sidebar").clicked() {
                         hide = Some(id.clone());
                         ui.close();
@@ -371,6 +426,14 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             if ui.input(|i| i.pointer.any_released()) {
                 ui.data_mut(|d| d.remove_temp::<String>(drag_key));
             }
+            match song_dropped {
+                Some((id, t)) if id == LIKED_MUSIC => {
+                    app.actions.push(Action::Like(t, true));
+                    app.toast("Added to Liked Music");
+                }
+                Some((playlist_id, t)) => app.backend.request(Req::AddToPlaylist { playlist_id, video_ids: vec![t.id] }),
+                None => {}
+            }
         });
     });
     if let Some(id) = hide {
@@ -382,10 +445,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             app.playlist_order.insert(to.min(app.playlist_order.len()), id);
         }
     }
-    let ready = app.updater.as_ref().and_then(|u| match u.state() {
-        crate::update::State::Ready { version, .. } => Some(version),
-        _ => None,
-    });
+    // A downloaded update (Restart), or for the .deb a new one that's out (its notes).
+    let (ready, available) = match app.updater.as_ref().map(|u| u.state()) {
+        Some(crate::update::State::Ready { version, .. }) => (Some(version), false),
+        Some(crate::update::State::Available { version, .. }) => (Some(version), true),
+        _ => (None, false),
+    };
     let mut restart = false;
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         nav(ui, glyphs::SETTINGS, LUCIDE, "Settings", Page::Settings, p == Page::Settings, &mut go_to);
@@ -395,18 +460,23 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
         if let Some(v) = &ready {
             ui.add_space(6.0);
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
-            let mut resp = named(resp, "Restart to update").on_hover_cursor(egui::CursorIcon::PointingHand);
+            let title = if available { "Update available" } else { "Restart to update" };
+            let mut resp = named(resp, title).on_hover_cursor(egui::CursorIcon::PointingHand);
             if collapsed {
-                resp = resp.on_hover_text(format!("Restart to update to BitChord {v}"));
+                resp = resp.on_hover_text(if available { format!("BitChord {v} is out") } else { format!("Restart to update to BitChord {v}") });
             }
             let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
             ui.painter().rect_filled(rect, 12.0, theme::with_alpha(look.accent, 0.22 + 0.12 * h));
             glyphs::draw(ui, pos2(rect.left() + ICON_X, rect.center().y), LUCIDE, glyphs::SPARKLES, theme::text());
             if a > 0.0 {
-                ui.painter().text(pos2(rect.left() + 46.0, rect.top() + 17.0), Align2::LEFT_CENTER, "Restart to update", theme::semibold(13.5), theme::with_alpha(theme::text(), a));
+                ui.painter().text(pos2(rect.left() + 46.0, rect.top() + 17.0), Align2::LEFT_CENTER, title, theme::semibold(13.5), theme::with_alpha(theme::text(), a));
                 ui.painter().text(pos2(rect.left() + 46.0, rect.top() + 35.0), Align2::LEFT_CENTER, format!("BitChord {v}"), theme::regular(12.0), theme::with_alpha(theme::text(), 0.75 * a));
             }
-            restart = resp.clicked();
+            if resp.clicked() && available {
+                app.notes_dialog = Some(super::notes::NotesDialog { version: v.clone(), ready: true });
+            } else {
+                restart = resp.clicked();
+            }
         }
     });
     if restart {
@@ -427,6 +497,37 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
 }
 
 // ------------------------------------------------------------------ top bar
+
+/// Round button with a clockwise arrow, drawn like the icon font's (Lucide's rotate-cw),
+/// which the bundled subset doesn't have.
+fn refresh_button(ui: &mut Ui) -> egui::Response {
+    const SIZE: f32 = 18.0;
+    let d = SIZE + 18.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(d), Sense::click());
+    let resp = named(resp, "Refresh").on_hover_text("Refresh (F5)").on_hover_cursor(egui::CursorIcon::PointingHand);
+    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
+    if h > 0.0 {
+        ui.painter().circle_filled(rect.center(), d / 2.0, theme::glass(0.10 * h));
+    }
+    let color = theme::lerp_color(theme::text_dim(), theme::text(), h);
+    let press = if resp.is_pointer_button_down_on() { 0.9 } else { 1.0 };
+    // On Lucide's 24-unit grid, centred on (12, 12).
+    let unit = SIZE * press / 24.0;
+    let at = |x: f32, y: f32| rect.center() + vec2(x - 12.0, y - 12.0) * unit;
+    let stroke = egui::Stroke::new(2.0 * unit, color);
+    // A circle of radius 9 from three o'clock round to the top right, then on to the arrow.
+    let mut arc: Vec<Pos2> = (0..=40)
+        .map(|i| {
+            let a = (i as f32 / 40.0) * 315.0_f32.to_radians();
+            at(12.0 + 9.0 * a.cos(), 12.0 + 9.0 * a.sin())
+        })
+        .collect();
+    arc.push(at(21.0, 8.0));
+    let painter = ui.painter();
+    painter.add(egui::Shape::line(arc, stroke));
+    painter.add(egui::Shape::line(vec![at(21.0, 3.0), at(21.0, 8.0), at(16.0, 8.0)], stroke));
+    resp
+}
 
 pub fn top_bar(app: &mut App, ui: &mut Ui) {
     // The search field lives on the Search page: nothing here to anchor suggestions to.
@@ -465,6 +566,15 @@ pub fn top_bar(app: &mut App, ui: &mut Ui) {
             cui.spinner();
         }
     });
+    // The refresh button, beside the account circle (this fork has no back/forward row
+    // in the top bar: they live on the sidebar's logo line).
+    {
+        let r = Rect::from_min_size(pos2(at.x - 68.0, panel.top()), Vec2::splat(44.0));
+        let mut rui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
+        if refresh_button(&mut rui).clicked() {
+            app.refresh();
+        }
+    }
 }
 
 /// The search pill: typeahead, suggestions and Enter to search. The Search page draws
@@ -507,7 +617,7 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
     let edit = ui.put(
         inner,
         egui::TextEdit::singleline(&mut app.search_text)
-            .hint_text(egui::RichText::new("Search songs, albums, artists, podcasts").color(theme::text_faint()))
+            .hint_text(egui::RichText::new(if app.show_podcasts { "Search songs, albums, artists, podcasts" } else { "Search songs, albums, artists" }).color(theme::text_faint()))
             .font(theme::regular(15.0))
             .frame(egui::Frame::NONE)
             .align(egui::Align2::LEFT_CENTER)
@@ -538,10 +648,18 @@ pub fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
             edit.request_focus();
         }
     }
-    // The search shortcut from Settings › Keyboard shortcuts; the box keeps its own focus.
-    let find = super::keys::hit(ui.ctx(), &app.keys, super::keys::Cmd::Search);
-    if field.clicked() || find {
+    // A click focuses the box; `/` does it from any page (App::shortcuts), so the box
+    // doesn't have to be on screen to be found.
+    if field.clicked() {
         edit.request_focus();
+    }
+    // While it's empty and unfocused, the pill advertises the key that opens it.
+    if !app.search_focused && app.search_text.is_empty() {
+        let at = pos2(rect.right() - 22.0, rect.center().y);
+        let h = theme::anim_bool(ui.ctx(), "search-hint", ui.rect_contains_pointer(Rect::from_center_size(at, Vec2::splat(24.0))), 0.15);
+        let painter = ui.painter();
+        painter.rect_filled(Rect::from_center_size(at, vec2(20.0, 20.0)), 5.0, theme::glass(0.07 + 0.05 * h));
+        painter.text(at, egui::Align2::CENTER_CENTER, "/", theme::semibold(12.0), theme::text_dim());
     }
     if edit.changed() || edit.gained_focus() || cleared {
         app.suggest_sel = None;
@@ -694,25 +812,23 @@ fn suggestion_text(ui: &Ui, pos: Pos2, text: &str, typed: &str, width: f32) {
 pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let full = ui.max_rect();
     if frosted {
-        // The page scrolls on under this strip: fade it cleanly into the background color
-        // so content doesn't create dirty artifacts or bleed under the floating pill.
-        let base = base_color(app);
-        vgradient(ui.painter(), full, base.gamma_multiply(0.0), base.gamma_multiply(0.92));
-        ui.interact(full, ui.id().with("player-strip"), Sense::hover());
+        // The page scrolls on under this strip: fade it out rather than end it at the
+        // player's edge. Clicks in the fade stay with the player, not the rows beneath.
+        vgradient(ui.painter(), full, theme::panel(0.0), theme::panel(0.66));
+        ui.interact(full, ui.scope_id().with("player-strip"), Sense::hover());
     }
     const H: f32 = 56.0;
     let w = (full.width() - 24.0).min(668.0);
     let cap = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 16.0 - H), vec2(w, H));
     let ctx = ui.ctx().clone();
     widgets::soft_shadow(ui, cap, H / 2.0, 20.0, 0.45);
-    // Solid base layer prevents the shadow and underlying scrolled rows from bleeding through the pill
-    ui.painter().rect_filled(cap, H / 2.0, base_color(app));
-    // Frosted glass surface: lit top highlight and crisp rim
-    ui.painter().rect_filled(cap, H / 2.0, theme::panel(0.92));
+    // Frosted: the page's colours show through a milky pane, with a lit top half and
+    // a bright rim standing in for the blur egui can't do.
+    ui.painter().rect_filled(cap, H / 2.0, theme::panel(0.88));
     let top = Rect::from_min_max(cap.min, pos2(cap.max.x, cap.min.y + H * 0.55));
-    ui.painter().rect_filled(top, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, theme::glass(0.08));
-    ui.painter().rect_stroke(cap, H / 2.0, egui::Stroke::new(1.0, theme::glass(0.22)), egui::StrokeKind::Inside);
-    ui.painter().hline(cap.x_range().shrink(26.0), cap.top() + 1.0, egui::Stroke::new(1.0, theme::glass(0.26)));
+    ui.painter().rect_filled(top, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, theme::glass(0.07));
+    ui.painter().rect_stroke(cap, H / 2.0, egui::Stroke::new(1.0, theme::glass(0.2)), egui::StrokeKind::Inside);
+    ui.painter().hline(cap.x_range().shrink(26.0), cap.top() + 1.0, egui::Stroke::new(1.0, theme::glass(0.24)));
 
     let status = app.audio.status.clone();
     // An Automix handoff keeps the outgoing song on this strip until the next one is
@@ -729,7 +845,8 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let narrow = cap.width() < 550.0;
     let pad = 16.0;
     let run_w = if narrow { 112.0 } else { 184.0 };
-    let right_w = 132.0;
+    // The speed button, when shown, takes a slot of its own at the right end.
+    let right_w = if app.tempo_on { 165.0 } else { 132.0 };
     let run_l = cap.left() + pad;
     let right_l = cap.right() - pad - right_w;
     let lcd_l = run_l + run_w + 8.0;
@@ -741,6 +858,18 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         let c = theme::lerp_color(theme::text_dim(), theme::text(), h);
         if enabled { c } else { c.gamma_multiply(0.45) }
     };
+    // Accent-coloured controls: the play state and the volume slider take the accent
+    // colour, like the progress line (this fork's transport is glyphs only, so the
+    // glyphs carry it rather than a filled circle). The flag is read out here: the
+    // closure must not hold the app, for the transport's calls below.
+    let accent_controls = app.accent_controls;
+    let control = |h: f32| {
+        if accent_controls {
+            theme::lerp_color(theme::with_alpha(accent, 0.55), accent, h)
+        } else {
+            ink(h)
+        }
+    };
 
     // Transport: shuffle | previous · play · next | repeat. The glyphs alone carry the
     // state; no button fills.
@@ -751,11 +880,12 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     };
     let mid = run_l + (run_w - 8.0) / 2.0;
     if !narrow {
-        let r = tbtn(ui, run_l + 14.0, "shuffle", "Shuffle up next");
+        let on = app.queue.shuffled();
+        let r = tbtn(ui, run_l + 14.0, "shuffle", if on { "Restore original order" } else { "Shuffle up next" });
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.12);
-        glyphs::draw(ui, r.rect.center(), 28.0, glyphs::SHUFFLE, ink(h));
+        glyphs::draw(ui, r.rect.center(), 28.0, glyphs::SHUFFLE, if on { app.accent_color() } else { ink(h) });
         if r.clicked() {
-            app.shuffle_upcoming();
+            app.shuffle_toggle();
         }
     }
     let r = tbtn(ui, mid - 33.0, "prev", "Previous");
@@ -776,7 +906,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     } else {
         // The glyphs cross-fade rather than swap: the site keeps its pause mark up
         // through a buffer, and a hard cut between the two weights flickers.
-        let fg = ink(0.55 + 0.45 * h);
+        let fg = control(0.55 + 0.45 * h);
         if morph < 1.0 {
             glyphs::draw(ui, c, 28.0, glyphs::PLAY, theme::with_alpha(fg, 1.0 - morph));
         }
@@ -880,7 +1010,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         }
         None => {
             ui.painter().rect_filled(cover, 6.0, theme::glass(0.08));
-            paint_mark(ui, cover.shrink(8.0));
+            app_logo(ui, cover.shrink(2.0), Color32::WHITE);
         }
     }
 
@@ -892,10 +1022,11 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     };
     let fade = 1.0 - 0.7 * focus;
     let afade = 1.0 - focus;
-    let tr = text_at(ui, pos2(text_l, cy - 15.0), &title, theme::semibold(13.0), theme::with_alpha(theme::text(), fade), text_w);
+    let explicit = track.as_ref().is_some_and(|t| t.explicit);
+    let tr = widgets::title_at(ui, pos2(text_l, cy - 15.0), &title, explicit, theme::semibold(13.0), theme::with_alpha(theme::text(), fade), text_w);
     if let Some(t) = &track {
         let tre = ui.interact(tr, ui.scope_id().with("bar-title"), Sense::click());
-        if named(tre, &t.title).on_hover_text(&t.title).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        if named(tre, &widgets::song_name(&t.title, t.explicit)).on_hover_text(&t.title).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.actions.push(Action::OpenNowPlaying(true));
         }
     }
@@ -929,12 +1060,15 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         ui.painter().galley(pos2(text_r - g.size().x, cy + 2.0), g, col);
     }
 
-    // Right: favourite, lyrics, up next, volume. Hovering the volume slides a slider
-    // over the other three, as in the reference.
+    // Right: favourite, lyrics, up next, speed, volume. Hovering the volume slides a
+    // slider over the other three, as in the reference.
     let vol = app.audio.volume();
     let rslot = |i: usize| right_l + 21.0 + i as f32 * 33.0;
-    let vol_r = Rect::from_center_size(pos2(rslot(3), cy), Vec2::splat(28.0));
-    let slider = Rect::from_min_size(pos2(cap.right() - pad - 33.0 - 96.0, cy - 10.0), vec2(96.0, 20.0));
+    // With the speed button on, the volume moves a slot along and the speed takes its
+    // place, as in the reference's own order.
+    let vol_at = if app.tempo_on { 4 } else { 3 };
+    let vol_r = Rect::from_center_size(pos2(rslot(vol_at), cy), Vec2::splat(28.0));
+    let slider = Rect::from_min_size(pos2(vol_r.left() - 103.0, cy - 10.0), vec2(96.0, 20.0));
     let open_id = ui.scope_id().with("bar-vol");
     let was = ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
     // Pointer position, not `rect_contains_pointer`: the window's own title-bar layers
@@ -969,7 +1103,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         {
             app.actions.push(Action::Like(t, !liked));
         }
-        let lyrics_on = super::nowplaying::lyrics_shown(app, &ctx);
+        let lyrics_on = app.np_open && app.np_tab == NpTab::Lyrics && !app.no_lyrics();
         let r = rbtn(ui, 1, "lyrics", "Lyrics");
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.15);
         glyphs::draw(ui, r.rect.center(), 18.0, if lyrics_on { glyphs::LYRICS } else { glyphs::LYRICS_OFF }, if lyrics_on { accent } else { ink(h) });
@@ -977,24 +1111,21 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
             if lyrics_on {
                 app.np_open = false;
             } else {
-                super::nowplaying::ask_lyrics(app, &ctx);
+                app.np_tab = NpTab::Lyrics;
+                app.actions.push(Action::OpenNowPlaying(true));
             }
         }
-        let queue_open = if app.np_open { app.np_tab == NpTab::UpNext } else { app.queue_open };
+        // In now playing the queue is its Up next panel; elsewhere, the side panel.
         let r = rbtn(ui, 2, "queue", "Up next");
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.15);
-        glyphs::draw(ui, r.rect.center(), 18.0, glyphs::QUEUE, if queue_open { accent } else { ink(h) });
+        glyphs::draw(ui, r.rect.center(), 18.0, glyphs::QUEUE, if app.queue_shown() { accent } else { ink(h) });
         if r.clicked() {
-            if app.np_open {
-                app.np_tab = if queue_open { NpTab::Art } else { NpTab::UpNext };
-            } else {
-                app.queue_open = !app.queue_open;
-            }
+            app.toggle_queue();
         }
     } else {
         volume_slider(app, ui, slider, "bar");
     }
-    let r = rbtn(ui, 3, "vol", "Mute");
+    let r = rbtn(ui, vol_at, "vol", "Mute");
     let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.15);
     // Three arcs, not two: the desktop app lights them a third at a time.
     let step = glyphs::volume_step(vol);
@@ -1007,6 +1138,12 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     }
     if r.clicked() {
         toggle_mute(app, ui.ctx());
+    }
+    // The speed button, when the setting is on: the speed it's at, lit (with the dot
+    // under it) when it isn't 1×. Clicking opens a small card with its slider.
+    if app.tempo_on {
+        let resp = rbtn(ui, 3, "tempo", "Playback speed");
+        tempo_button(app, ui, resp, accent, cap.bottom());
     }
 
     if total > 0.0
@@ -1022,40 +1159,92 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     }
 }
 
-/// The BitChord mark, white, fitted inside `r` (the sleeve slot when nothing plays).
-fn paint_mark(ui: &Ui, r: Rect) {
-    mark(ui, r, Color32::from_white_alpha(170));
+/// The player bar's speed button: the speed it's at, lit (with the dot under it) when
+/// it isn't 1×. Clicking opens a small card with its slider.
+fn tempo_button(app: &mut App, ui: &mut Ui, resp: egui::Response, accent: Color32, dot_floor: f32) {
+    let ctx = ui.ctx().clone();
+    let jam = app.jam.active();
+    let changed = !jam && (app.speed - 1.0).abs() > 0.001;
+    let r = resp.rect;
+    let h = theme::anim_bool(&ctx, resp.id.with("h"), resp.hovered(), 0.15);
+    if h > 0.0 {
+        ui.painter().rect_filled(r, r.height() / 2.0, theme::glass(0.10 * h));
+    }
+    let color = if changed { theme::text() } else { theme::lerp_color(theme::text_dim(), theme::text(), h) };
+    let speed = if jam { 1.0 } else { app.speed };
+    let g = widgets::galley(ui, &super::pages::times(speed), theme::semibold(12.5), color, 60.0);
+    ui.painter().galley(r.center() - g.size() / 2.0, g, color);
+    if changed {
+        ui.painter().circle_filled(pos2(r.center().x, (r.bottom() + 3.0).min(dot_floor)), 2.0, accent);
+    }
+    // A small card over the button: the speed, its slider under it.
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        use crate::audio::tempo::{MAX_SPEED, MIN_SPEED};
+        ui.set_width(248.0);
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        ui.add_space(6.0);
+        let pad = 10.0;
+        if jam {
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.add(egui::Label::new(egui::RichText::new(super::pages::TEMPO_IN_JAM).font(theme::regular(12.5)).color(theme::text_dim())).wrap());
+            });
+            ui.add_space(6.0);
+        }
+        ui.add_enabled_ui(!jam, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.label(egui::RichText::new("Speed").font(theme::semibold(13.5)).color(theme::text()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(pad);
+                    ui.label(egui::RichText::new(super::pages::times(speed)).font(theme::regular(13.0)).color(theme::text_dim()));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(pad - 8.0);
+                super::pages::slider_track(ui, &mut app.speed, (MIN_SPEED, MAX_SPEED, 0.05), Some(1.0), ui.available_width() - pad + 8.0, "Speed");
+            });
+            // Always there, so the card keeps its size while the slider moves.
+            ui.add_space(5.0);
+            let (d, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().rect_filled(d.shrink2(vec2(8.0, 0.0)), 0.0, theme::glass(0.08));
+            ui.add_space(5.0);
+            let normal = (app.speed - 1.0).abs() < 0.001;
+            ui.add_enabled_ui(!normal, |ui| {
+                if normal {
+                    ui.multiply_opacity(0.4);
+                }
+                if widgets::menu_action(ui, Some(icon::HISTORY), "Back to normal") {
+                    app.speed = 1.0;
+                }
+            });
+        });
+        ui.add_space(4.0);
+    });
 }
 
-/// The BitChord mark, fitted inside `r`, tinted `tint`.
-fn mark(ui: &Ui, r: Rect, tint: Color32) {
-    const MARK: &[u8] = include_bytes!("../../assets/icon/mark.png");
-    const W: f32 = 256.0;
-    const H: f32 = 171.0;
-    let key = egui::Id::unique("bitchord-mark");
+/// The bundled app icon fitted into the sidebar and the idle player sleeve.
+fn app_logo(ui: &Ui, r: Rect, tint: Color32) {
+    let key = egui::Id::unique("bitchord-logo");
     let tex = match ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         Some(t) => t,
         None => {
-            let Ok(img) = image::load_from_memory(MARK) else { return };
+            let Ok(img) = image::load_from_memory(crate::appicon::PNG) else { return };
             let img = img.into_rgba8();
             let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-            let options = egui::TextureOptions {
-                magnification: egui::TextureFilter::Linear,
-                minification: egui::TextureFilter::Linear,
-                wrap_mode: egui::TextureWrapMode::ClampToEdge,
-                mipmap_mode: Some(egui::TextureFilter::Linear),
-            };
-            let t = ui.ctx().load_texture("bitchord-mark", color, options);
+            let t = ui.ctx().load_texture("bitchord-logo", color, egui::TextureOptions::LINEAR);
             ui.ctx().data_mut(|d| d.insert_temp(key, t.clone()));
             t
         }
     };
-    let k = (r.width() / W).min(r.height() / H);
-    let dst = Rect::from_center_size(r.center(), vec2((W * k).round(), (H * k).round()));
+    let size = tex.size_vec2();
+    let scale = (r.width() / size.x).min(r.height() / size.y);
+    let dst = Rect::from_center_size(r.center(), size * scale);
     ui.painter().image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
 }
 
-/// Where Mute keeps the volume to go back to (the player bar's and the mini player's).
+/// Where Mute keeps the volume to go back to (the player bar's, the mini player's and
+/// the keyboard's — one slot, not one per caller).
 pub fn unmute_id() -> egui::Id {
     egui::Id::new("unmute")
 }
@@ -1073,7 +1262,21 @@ pub fn toggle_mute(app: &mut App, ctx: &egui::Context) {
 }
 
 /// The volume track: click or drag to set, scroll over it to nudge.
-fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str) {
+/// What volume normalization does to the song playing, for its setting. None while it's off.
+pub(super) fn normalization_note(app: &App) -> Option<String> {
+    if app.normalize == crate::audio::Normalize::Off {
+        return None;
+    }
+    Some(match app.audio.normalization() {
+        None => "no loudness figure from YouTube, so it plays as it is".to_owned(),
+        Some(db) if db.abs() < 0.05 => "already at the level".to_owned(),
+        Some(db) => format!("turned {} {:.1} dB", if db > 0.0 { "up" } else { "down" }, db.abs()),
+    })
+}
+
+/// The volume track: click or drag to set, scroll over it to nudge. Pointed at, the
+/// volume shows above the knob.
+pub(super) fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str) {
     let vol = app.audio.volume();
     let vresp = ui.interact(slider, ui.scope_id().with(salt), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::PointingHand);
     vresp.widget_info(|| egui::WidgetInfo::slider(true, vol as f64, "Volume"));
@@ -1081,8 +1284,14 @@ fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str) {
     let track_r = Rect::from_center_size(slider.center(), vec2(slider.width(), 4.0));
     ui.painter().rect_filled(track_r, 2.0, theme::glass(0.15));
     let fill = Rect::from_min_size(track_r.min, vec2(track_r.width() * vol, 4.0));
-    ui.painter().rect_filled(fill, 2.0, theme::lerp_color(theme::text_dim(), theme::text(), vh));
-    ui.painter().circle_filled(pos2(fill.right(), track_r.center().y), 2.0 + 4.5 * vh, theme::text());
+    let (bar, knob) = if app.accent_controls {
+        let a = app.accent_color();
+        (a, a)
+    } else {
+        (theme::lerp_color(theme::text_dim(), theme::text(), vh), theme::text())
+    };
+    ui.painter().rect_filled(fill, 2.0, bar);
+    ui.painter().circle_filled(pos2(fill.right(), track_r.center().y), 2.0 + 4.5 * vh, knob);
     if let Some(p) = vresp.interact_pointer_pos()
         && (vresp.dragged() || vresp.clicked())
     {
@@ -1094,6 +1303,14 @@ fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str) {
             app.audio.set_volume((vol + scroll / 600.0).clamp(0.0, 1.0));
         }
     }
+    if vh > 0.0 {
+        // Where the volume is now, after this frame's drag or scroll. Above everything,
+        // so the player bar's popup slider doesn't cut it off.
+        let now = app.audio.volume();
+        let at = pos2(track_r.left() + track_r.width() * now, track_r.top() - 12.0);
+        let layer = egui::LayerId::new(egui::Order::Tooltip, ui.scope_id().with((salt, "pct")));
+        ui.ctx().layer_painter(layer).text(at, Align2::CENTER_BOTTOM, format!("{}%", (now * 100.0).round()), theme::semibold(12.0), theme::with_alpha(theme::text(), vh));
+    }
 }
 
 // ------------------------------------------------------------------ queue drawer
@@ -1102,44 +1319,111 @@ pub fn queue_drawer(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Up next").font(theme::bold(20.0)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Left of the window buttons, which sit over the drawer's top right.
-            ui.add_space(super::titlebar::right_gap(ui.ctx(), ui.max_rect(), 0.0));
+            // Left of the window buttons, which sit over the drawer's top right; the
+            // drawer's frame keeps off the window's edge only what its scroll bar needs,
+            // so the row inset in queue_list gives this header its breathing room back.
+            ui.add_space(super::titlebar::right_gap(ui.ctx(), ui.max_rect(), 14.0));
+            // Left of Close, with more in the queue than the song playing.
+            if app.queue.tracks.len() > usize::from(app.queue.index.is_some()) && icon_button(ui, icon::TRASH_2, 15.0, "Clear queue", false).clicked() {
+                app.actions.push(Action::QueueClear);
+            }
             if icon_button(ui, icon::X, 16.0, "Close queue", false).clicked() {
                 app.queue_open = false;
             }
         });
     });
     ui.add_space(8.0);
-    queue_list(app, ui, "drawer");
+    queue_list(app, ui, "drawer", 14.0);
 }
 
-/// Current track plus everything after it. Shared by the drawer and now playing.
-pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str) {
+/// "Playing from playlist", and its name, which opens it.
+fn playing_from(app: &mut App, ui: &mut Ui) {
+    let Some((kind, name, target)) = app.playing_from() else { return };
+    ui.label(egui::RichText::new(format!("Playing from {kind}")).font(theme::regular(12.5)).color(theme::text_dim()));
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
+    let r = text_at(ui, pos2(rect.left(), rect.top() + 1.0), &name, theme::semibold(15.0), theme::text(), w);
+    let resp = named(ui.interact(r, ui.scope_id().with("playing-from"), Sense::click()), &name).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.hovered() {
+        ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, theme::text()));
+    }
+    if resp.clicked() {
+        // Liked Music is Library › Songs, where it was played from.
+        let liked = matches!(&target, Target::Playlist(id) if id == super::lists::LIKED_MUSIC);
+        app.actions.push(if liked { Action::Go(Page::Library(LibTab::Songs)) } else { Action::Open(target) });
+    }
+    ui.add_space(8.0);
+}
+
+/// The whole queue, scrolled to the current song when it changes: the songs already
+/// played are above it. Shared by the drawer and now playing.
+/// `bar_inset`: the strip at the right that stays clear of the rows, where the panel's
+/// scroll bar hugs the edge — so it never crosses the remove ✕ or the ⋯ menu, and a
+/// scrub down it doesn't light the rows' ✕ buttons up as it passes.
+pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
     let rows = super::pages::Rows::new(app, ui.input(|i| i.time));
-    egui::ScrollArea::vertical().id_salt(("queue", salt)).auto_shrink(false).show(ui, |ui| {
-        if app.queue.tracks.is_empty() {
-            ui.label(egui::RichText::new("Nothing queued yet").color(theme::text_dim()));
-            return;
-        }
-        let start = app.queue.index.unwrap_or(0);
-        ui.checkbox(&mut app.autoplay, egui::RichText::new("Autoplay similar songs").color(theme::text_dim())).on_hover_cursor(egui::CursorIcon::PointingHand);
-        ui.add_space(6.0);
-        let (queue, liked, acts, has_current) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some());
-        widgets::visible_rows(ui, queue.len() - start, |ui, k| {
-            let i = start + k;
-            let t = &queue[i];
-            // The first row is the current song.
-            let current = k == 0 && has_current;
-            let o = widgets::RowOpts {
-                current,
-                queue_remove: (!current).then_some(i),
-                queue_move: (!current && queue.len() > 1).then(|| (i, k > 1, i + 1 < queue.len())),
-                ..rows.opts(liked, t, None, false)
-            };
-            let resp = widgets::track_row(ui, t, &o, acts);
-            if resp.clicked() {
-                // The playing row pauses/resumes instead of doing nothing.
-                acts.push(if current { Action::TogglePlay } else { Action::QueueJump(i) });
+    if app.queue.tracks.is_empty() {
+        ui.label(egui::RichText::new("Nothing queued yet").color(theme::text_dim()));
+        return;
+    }
+    let start = app.queue.index.unwrap_or(0);
+    // Above the list, so they stay in sight however far up it's scrolled.
+    playing_from(app, ui);
+    ui.checkbox(&mut app.autoplay, egui::RichText::new("Autoplay similar songs").color(theme::text_dim())).on_hover_cursor(egui::CursorIcon::PointingHand);
+    ui.add_space(6.0);
+    // A new current song (or a new queue) brings it back to the top of the list.
+    let mut area = egui::ScrollArea::vertical().id_salt(("queue", salt)).auto_shrink(false);
+    let shown = egui::Id::unique(("queue-at", salt));
+    let at = (app.queue.index, app.queue.current().map(|t| t.id.clone()));
+    if ui.data(|d| d.get_temp::<(Option<usize>, Option<String>)>(shown)).as_ref() != Some(&at) {
+        ui.data_mut(|d| d.insert_temp(shown, at));
+        let h = widgets::ROW_H + ui.spacing().item_spacing.y;
+        area = area.vertical_scroll_offset(start as f32 * h);
+    }
+    area.show(ui, |ui| {
+        // The rows keep off the panel's edge by `bar_inset`, where the scroll bar hugs
+        // the edge: it never crosses the remove ✕ or the ⋯ menu, and a scrub down it
+        // doesn't light the rows' ✕ buttons up as it passes.
+        let width = ui.max_rect().width() - bar_inset;
+        ui.allocate_ui(vec2(width, 0.0), |ui| {
+            let accent = app.accent_color();
+            let (queue, liked, acts, has_current, drag) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &mut app.row_drag);
+            // Songs can be dragged into another order, those played too, as in YouTube
+            // Music's queue, and songs dragged in from other lists land where they're let
+            // go; in a room only the host drives, that's the relay's to say.
+            let (list, movable) = (egui::Id::unique(("queue", salt)), !app.jam.locked());
+            let top = ui.cursor().top();
+            // The whole queue: the songs already played stay above the one playing.
+            widgets::visible_rows(ui, queue.len(), |ui, i| {
+                let t = &queue[i];
+                let current = i == start && has_current;
+                if movable && !current {
+                    row_drag::grip(ui, drag, list, i, t);
+                }
+                let o = widgets::RowOpts { current, hide_duration_hover: !current, ..rows.opts(liked, t, None, false) };
+                let resp = widgets::track_row(ui, t, &o, acts);
+                if resp.clicked() {
+                    // The playing row pauses/resumes instead of doing nothing.
+                    acts.push(if current { Action::TogglePlay } else { Action::QueueJump(i) });
+                }
+                if !current && drag.is_none() && ui.rect_contains_pointer(Rect::from_min_max(resp.rect.min, pos2(resp.rect.right() + 42.0, resp.rect.bottom()))) {
+                    // The remove ✗, in the length's place — the length makes way for it
+                    // while the row is hovered (RowOpts::hide_duration_hover).
+                    let x = Rect::from_center_size(resp.rect.right_center() - vec2(26.0, 0.0), Vec2::splat(28.0));
+                    let xr = named(ui.interact(x, resp.id.with("rm"), Sense::click()), "Remove from queue").on_hover_cursor(egui::CursorIcon::PointingHand);
+                    ui.painter().circle_filled(x.center(), 14.0, theme::panel(0.6));
+                    icon_at(ui, x.center(), icon::X, 14.0, theme::text());
+                    if xr.clicked() {
+                        acts.push(Action::QueueRemove(i));
+                    }
+                }
+            });
+            let rows = row_drag::Rows { top, first: 0, lowest: 0, end: queue.len(), accent, spaced: None };
+            if let Some(d) = row_drag::feedback(ui, drag, list, rows) {
+                acts.push(Action::QueueMove { from: d.from, gap: d.gap, id: d.id });
+            }
+            if movable && let Some((gap, track)) = row_drag::receive(ui, drag, list, rows) {
+                acts.push(Action::QueueInsert { gap, track });
             }
         });
     });
@@ -1152,9 +1436,21 @@ pub fn toast(app: &mut App, ctx: &egui::Context, now: f64) {
     if *shown < 0.0 {
         return;
     }
-    let age = (now - shown) as f32;
-    let t = theme::ease_out(age / 0.25) * (1.0 - ((age - 4.1) / 0.4).clamp(0.0, 1.0));
+    let (msg, shown) = (msg.clone(), *shown);
+    let mut age = (now - shown) as f32;
+    let hold = app.toast_hold();
+    let undo = app.undo.is_some();
+    // Pointed at, it stays (and comes back if it was fading), to be read or undone.
+    let over = ctx.pointer_hover_pos().zip(ctx.memory(|m| m.area_rect(egui::Id::unique("toast")))).is_some_and(|(p, r)| r.contains(p));
+    if over && age > 0.25 {
+        age = 0.25;
+        if let Some((_, s)) = &mut app.toast {
+            *s = now - 0.25;
+        }
+    }
+    let t = theme::ease_out(age / 0.25) * (1.0 - ((age - hold) / 0.4).clamp(0.0, 1.0));
     let screen = ctx.content_rect();
+    let mut clicked = false;
     egui::Area::new(egui::Id::unique("toast"))
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_BOTTOM)
@@ -1169,13 +1465,34 @@ pub fn toast(app: &mut App, ctx: &egui::Context, now: f64) {
                 .shadow(egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: theme::shade(0.45) })
                 .show(ui, |ui| {
                     ui.set_max_width(520.0);
-                    ui.label(egui::RichText::new(msg.as_str()).font(theme::regular(14.0)).color(theme::text()));
+                    let color = theme::text();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(msg.as_str()).font(theme::regular(14.0)).color(color));
+                        if undo {
+                            ui.add_space(10.0);
+                            let text = ui.painter().layout_no_wrap("Undo".to_owned(), theme::semibold(14.0), color);
+                            let (r, resp) = ui.allocate_exact_size(text.size(), Sense::click());
+                            let resp = named(resp, "Undo").on_hover_text("Undo (Ctrl+Z)").on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.hovered() {
+                                ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, color));
+                            }
+                            ui.painter().galley(r.min, text, color);
+                            clicked = resp.clicked();
+                        }
+                    });
                 });
         });
+    if clicked {
+        app.actions.push(Action::Undo);
+    }
     // Frames only while it fades in or out; in between it just waits.
-    if (0.25..4.1).contains(&age) {
-        ctx.request_repaint_after(std::time::Duration::from_secs_f32(4.1 - age));
-    } else {
+    if (0.25..hold).contains(&age) {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f32(hold - age));
+    } else if age < hold + 0.4 {
         ctx.request_repaint();
+    } else {
+        // Faded out: gone, whatever else would have kept it.
+        app.toast = None;
+        app.settle();
     }
 }

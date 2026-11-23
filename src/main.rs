@@ -1,19 +1,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appicon;
-mod apple;
-mod album_logo;
 mod artist_signature;
+mod autostart;
+mod canvas;
 mod fullscreen;
-mod lighting;
+mod hls;
 mod proxy;
 mod renderer;
 mod art;
 mod audio;
 mod backend;
 mod bidi;
+mod cache;
 mod deeplink;
 mod discord;
+mod discord_artwork;
+mod discord_link;
 mod dash;
 mod downloads;
 mod hires;
@@ -22,14 +25,22 @@ mod jam;
 mod innertube;
 mod jsc;
 mod lastfm;
+mod listening;
+mod local;
+mod logging;
 mod login;
 mod lyrics;
 mod media;
 mod model;
 mod motion;
+mod notify;
 mod opus;
+mod party;
 mod preset;
+mod providers;
+mod recommend;
 mod shader;
+mod sources;
 mod sponsorblock;
 mod stream;
 mod theme;
@@ -39,10 +50,11 @@ mod tray;
 mod turnstile;
 mod ui;
 mod update;
+mod vault;
+mod video;
 mod webmusic;
 mod ytdlp;
 mod ytm;
-mod vault;
 mod ytmapi;
 
 use std::sync::{Arc, OnceLock};
@@ -54,36 +66,87 @@ pub const DEFAULT_SIZE: [f32; 2] = [1200.0, 780.0];
 pub const MIN_SIZE: [f32; 2] = [760.0, 480.0];
 
 fn main() -> eframe::Result {
+    // glibc gives each thread that allocates its own heap (up to 8 per core), and what a
+    // song frees in one isn't reused by the next song's threads: on Linux the app grew a
+    // few MB with every song. Two heaps keep the freed memory in use. And big blocks (a
+    // song's buffer, its pictures) go back to the system as soon as they're freed: glibc
+    // otherwise raises that limit past them after the first one and keeps them in its
+    // heaps. Before any thread starts; MALLOC_ARENA_MAX and MALLOC_MMAP_THRESHOLD_ still
+    // set them.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: only changes allocator settings, while the process is single-threaded.
+        if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+            unsafe { libc::mallopt(libc::M_ARENA_MAX, 2) };
+        }
+        if std::env::var_os("MALLOC_MMAP_THRESHOLD_").is_none() {
+            unsafe { libc::mallopt(libc::M_MMAP_THRESHOLD, 128 * 1024) };
+        }
+    }
     // Child-process modes for the webview windows (see login.rs / turnstile.rs).
     let mut args = std::env::args_os().skip(1);
     if let (Some(flag), Some(dir)) = (args.next(), args.next()) {
         // The parent hands its proxy setting down through the environment.
         proxy::init(std::path::Path::new(""));
+        // Children are separate processes: their warnings and panics land in their
+        // own log, not the main one (which the parent holds open).
         if flag == login::FLAG {
+            logging::init_child(&data_dir(), "login");
             login::child_main(login::Site::Google, dir.into());
             return Ok(());
         }
         if flag == login::SPOTIFY_FLAG {
+            logging::init_child(&data_dir(), "spotify");
             login::child_main(login::Site::Spotify, dir.into());
             return Ok(());
         }
+        if flag == login::DISCORD_FLAG {
+            logging::init_child(&data_dir(), "discord");
+            login::child_main(login::Site::Discord, dir.into());
+            return Ok(());
+        }
         if flag == turnstile::FLAG {
+            logging::init_child(&data_dir(), "turnstile");
             turnstile::child_main(dir.into());
             return Ok(());
         }
     }
-    // A party link (`bitchord://party/CODE` or the https invite page): hand it to the running
-    // instance if there is one, else join once this one is up. Before `init_logging`,
+    // The single-instance hand-off, before anything slow: the first launch takes the
+    // per-user channel and serves it; a later one (the shortcut clicked again, a jam
+    // link) finds it taken, hands its message over and exits — or, when the holder
+    // turns out to be gone, takes the channel over and carries on. Before `init_logging`,
     // which would truncate the running instance's log file.
-    if let Some(link) = deeplink::from_args() {
-        if deeplink::forward_to_running(&link.url()) {
-            return Ok(());
+    let claim = deeplink::claim();
+    let mut show_requested = false;
+    let mut handed = false;
+    if claim.busy() {
+        if let Some(invite) = deeplink::from_args() {
+            handed = deeplink::forward(&invite.message());
+        } else {
+            handed = deeplink::forward_show();
         }
-        deeplink::push(link);
-    } else if deeplink::forward_show() {
+        show_requested = !handed && std::env::args_os().skip(1).any(|a| a == deeplink::SHOW_FLAG);
+        if !handed {
+            // Nobody answered: the holder died mid-startup. Keep its channel for us.
+            deeplink::take_over();
+        }
+    }
+    if handed {
         return Ok(());
     }
-    init_logging();
+    if let Some(code) = deeplink::from_args() {
+        deeplink::push(code);
+    }
+    logging::init(&data_dir());
+    guard_settings(&data_dir());
+    if show_requested {
+        if claim.busy() {
+            // The holder was there but didn't answer; `take_over` has the channel now.
+            log::warn!("--show: the running copy didn't answer; starting");
+        } else {
+            log::info!("--show: no running copy to hand the window to; starting");
+        }
+    }
     update::clean_portable();
     stream::init_dev_hooks();
     proxy::init(&data_dir());
@@ -91,13 +154,20 @@ fn main() -> eframe::Result {
     // Dev hook: YTM_BACKGROUND opens the window off-screen, unfocused and off the
     // taskbar, so automated test runs don't pop up over whatever the user is doing.
     let background = std::env::var_os("YTM_BACKGROUND").is_some();
+    ui::init_titlebar(&data_dir());
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("BitChord")
         .with_app_id("bitchord")
         .with_inner_size(DEFAULT_SIZE)
         .with_min_inner_size(MIN_SIZE)
-        // Windows: the app draws its own title bar (see `ui::titlebar`).
+        // Windows, and Linux where the desktop draws none: the app draws its own title
+        // bar (see `ui::titlebar`).
         .with_decorations(!ui::custom_titlebar())
+        // macOS: its frame, without its title strip; the traffic lights go on the app's
+        // top row (see `ui::titlebar`).
+        .with_fullsize_content_view(ui::titlebar_inset())
+        .with_titlebar_shown(!ui::titlebar_inset())
+        .with_title_shown(!ui::titlebar_inset())
         .with_icon(appicon::get(appicon::load(&data_dir())).icon_data().expect("bundled icons are valid PNGs"));
     if background {
         viewport = viewport.with_position([-4000.0, 0.0]).with_inner_size([1920.0, 1057.0]).with_active(false).with_taskbar(false);
@@ -117,8 +187,12 @@ fn main() -> eframe::Result {
         multisampling: 0,
         depth_buffer: 0,
         stencil_buffer: 0,
-        // Dev hook: YTM_FPS paces frames itself (see `dev_pace`), so vsync is off.
-        glow_options: eframe::egui_glow::GlowConfiguration { vsync: std::env::var_os("YTM_FPS").is_none(), ..Default::default() },
+        // Dev hooks: YTM_FPS paces frames itself (see `ui::pace`), so vsync is off;
+        // YTM_NO_VSYNC turns it off as a driver forcing it off would.
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: std::env::var_os("YTM_FPS").is_none() && std::env::var_os("YTM_NO_VSYNC").is_none(),
+            ..Default::default()
+        },
         wgpu_options: renderer::wgpu_options(),
         ..Default::default()
     };
@@ -140,9 +214,15 @@ fn main() -> eframe::Result {
                 }
             };
 
-            // Party links from later launches arrive over a pipe (first instance only).
-            deeplink::listen(wake);
-            // Keep `bitchord:` links pointing at this copy; dev builds leave it alone
+            // Jam links from later launches arrive over the channel claimed at startup:
+            // this is where their wake-up meets the UI.
+            deeplink::set_wake(Arc::new(move || wake()));
+            // Before the first frame, which then draws in the desktop's light or dark style.
+            #[cfg(target_os = "linux")]
+            theme::follow_system_scheme(wake);
+            // Whether song notifications can show here (Windows: a Start menu entry).
+            notify::look_up();
+            // Keep `ytm-rs:` links pointing at this copy; dev builds leave it alone
             // (even with YTM_UPDATE_FORCE).
             if update::installed() && !cfg!(debug_assertions) {
                 deeplink::register_protocol();
@@ -178,10 +258,17 @@ fn main() -> eframe::Result {
                 appicon::set_hwnd(h);
                 fullscreen::set_hwnd(h);
                 ui::set_titlebar_hwnd(h);
+                ui::set_mini_hwnd(h);
                 // eframe sets only the small icon; the taskbar button wants the big one.
                 appicon::set_window_icon(appicon::get(appicon::load(backend.data_dir())));
             }
-            let media = media::Media::new(hwnd(cc), media_tx, wake);
+            #[cfg(target_os = "macos")]
+            if let Ok(h) = raw_window_handle::HasWindowHandle::window_handle(cc)
+                && let raw_window_handle::RawWindowHandle::AppKit(h) = h.as_raw()
+            {
+                ui::set_titlebar_view(h.ns_view.as_ptr());
+            }
+            let media = media::Media::new(hwnd(cc), media_tx, media::Direct::new(audio.clone()), wake);
 
             // Which GL driver this is, for reports of drawing problems (Windows on ARM runs
             // GL through Mesa's D3D12 layer).
@@ -210,6 +297,9 @@ fn main() -> eframe::Result {
                 ui::Channels { resp_rx, audio_rx, media_rx },
                 media,
                 bg,
+                // `--no-tray`: a session with "Close to tray" off, so × quits for real
+                // (for when the tray icon can't be trusted).
+                std::env::args_os().skip(1).any(|a| a == deeplink::NO_TRAY_FLAG),
                 cc.storage,
             )))
         }),
@@ -237,30 +327,6 @@ fn hwnd(_: &eframe::CreationContext) -> Option<*mut std::ffi::c_void> {
     None
 }
 
-/// Log to stderr in debug builds; release builds have no console, so log to a file
-/// next to the settings (overwritten each launch).
-fn init_logging() {
-    let mut builder = env_logger::Builder::from_env(
-        // A test build can be made more talkative: YTM_DEFAULT_LOG=warn,bitchord=debug cargo build.
-        env_logger::Env::default().default_filter_or(option_env!("YTM_DEFAULT_LOG").unwrap_or("warn,bitchord=info")),
-    );
-    // Dev hook: YTM_LOG=<path> logs there (test runs beside a running copy).
-    if let Some(path) = std::env::var_os("YTM_LOG") {
-        if let Ok(file) = std::fs::File::create(path) {
-            builder.target(env_logger::Target::Pipe(Box::new(file)));
-        }
-    } else if !cfg!(debug_assertions) {
-        let dir = data_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        // The last run's log too: reopening the app after a problem would otherwise wipe it.
-        let _ = std::fs::rename(dir.join("ytm-rs.log"), dir.join("ytm-rs.prev.log"));
-        if let Ok(file) = std::fs::File::create(dir.join("ytm-rs.log")) {
-            builder.target(env_logger::Target::Pipe(Box::new(file)));
-        }
-    }
-    builder.init();
-}
-
 /// Settings, caches and the sign-in: `data` beside the portable build's exe, else the
 /// user's app data. Dev hook: YTM_DATA_DIR runs on a separate profile.
 fn data_dir() -> std::path::PathBuf {
@@ -271,4 +337,27 @@ fn data_dir() -> std::path::PathBuf {
         return dir.join("data");
     }
     directories::ProjectDirs::from("", "", "ytm-rs").expect("no home directory").data_dir().to_path_buf()
+}
+
+/// eframe reads an unparsable `app.ron` as no settings at all, and its next save
+/// overwrites what's left — a kill mid-write (the updater's installer asking the app
+/// to close, a power cut) shows up at the next launch as every setting wiped. So the
+/// file is kept one good copy deep: a copy that parses is backed up, a copy that
+/// doesn't is set aside and the backup takes its place, before eframe ever opens it.
+/// The half-written copy stays as `app.ron.bad` for anyone who wants it back.
+pub(crate) fn guard_settings(dir: &std::path::Path) {
+    use std::io::BufReader;
+    let path = dir.join("app.ron");
+    let Ok(file) = std::fs::File::open(&path) else { return };
+    let reads = ron::de::from_reader::<_, std::collections::HashMap<String, String>>(BufReader::new(file)).is_ok();
+    if reads {
+        let _ = std::fs::copy(&path, dir.join("app.ron.bak"));
+        return;
+    }
+    log::warn!("settings: {} is unreadable; setting it aside", path.display());
+    let _ = std::fs::rename(&path, dir.join("app.ron.bad"));
+    let bak = dir.join("app.ron.bak");
+    if std::fs::copy(&bak, &path).is_ok() {
+        log::info!("settings: restored the last good copy");
+    }
 }

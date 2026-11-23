@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::backend::{ArtistPage, Collection};
+use crate::backend::{ArtistPage, Collection, ShelfLink};
 use crate::model::{Card, Chip, Link, Shelf, ShelfKind, Target, Thumb, Track};
 use crate::ytmapi::Api;
 
@@ -33,6 +33,7 @@ fn parse_home(v: &Value) -> HomePage {
             let ep = if selected { &c["onDeselectedCommand"] } else { &c["navigationEndpoint"] };
             Some(Chip { title: text(&c["text"])?, params: ep["browseEndpoint"]["params"].as_str().map(str::to_owned), selected })
         })
+        .filter(|c: &Chip| podcasts() || c.title != "Podcasts")
         .collect();
     HomePage { chips, shelves: shelves(&sec["contents"]), continuation: continuation(sec) }
 }
@@ -42,6 +43,84 @@ pub async fn home_more(api: &Api, token: &str, auth: bool) -> anyhow::Result<Hom
     let sec = &v["continuationContents"]["sectionListContinuation"];
     Ok(HomePage { chips: vec![], shelves: shelves(&sec["contents"]), continuation: continuation(sec) })
 }
+
+// --------------------------------------------------------------- moods & genres
+
+/// A group of Explore's Moods & genres ("Moods & moments", "Genres").
+pub struct MoodGroup {
+    pub title: String,
+    pub moods: Vec<Mood>,
+}
+
+/// One of its categories: its browse params, and the colour of its stripe (ARGB).
+pub struct Mood {
+    pub title: String,
+    pub params: String,
+    pub color: u32,
+}
+
+/// A category's page: shelves of playlists.
+pub struct MoodPage {
+    pub params: String,
+    pub title: String,
+    pub shelves: Vec<Shelf>,
+}
+
+pub async fn moods(api: &Api, auth: bool) -> anyhow::Result<Vec<MoodGroup>> {
+    Ok(parse_moods(&api.call("browse", json!({ "browseId": "FEmusic_moods_and_genres" }), auth).await?))
+}
+
+fn parse_moods(v: &Value) -> Vec<MoodGroup> {
+    let sec = &v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"];
+    arr(&sec["contents"])
+        .iter()
+        .filter_map(|s| {
+            let g = &s["gridRenderer"];
+            let title = text(&g["header"]["gridHeaderRenderer"]["title"])?;
+            let moods: Vec<Mood> = arr(&g["items"])
+                .iter()
+                .filter_map(|i| {
+                    let b = &i["musicNavigationButtonRenderer"];
+                    let params = b["clickCommand"]["browseEndpoint"]["params"].as_str()?.to_owned();
+                    Some(Mood { title: text(&b["buttonText"])?, params, color: b["solid"]["leftStripeColor"].as_u64().unwrap_or(0) as u32 })
+                })
+                .collect();
+            (!moods.is_empty()).then_some(MoodGroup { title, moods })
+        })
+        .collect()
+}
+
+pub async fn mood(api: &Api, params: &str, auth: bool) -> anyhow::Result<MoodPage> {
+    let v = api.call("browse", json!({ "browseId": "FEmusic_moods_and_genres_category", "params": params }), auth).await?;
+    Ok(parse_mood(&v, params))
+}
+
+fn parse_mood(v: &Value, params: &str) -> MoodPage {
+    let sec = &v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"];
+    MoodPage { params: params.to_owned(), title: text(&v["header"]["musicHeaderRenderer"]["title"]).unwrap_or_default(), shelves: shelves(&sec["contents"]) }
+}
+
+/// Whether podcasts are shown (Settings › Playback › Show podcasts). Off, the app is as
+/// it was before it knew of them: no Podcasts chip on Home, and shows and episodes are
+/// left out wherever YouTube Music lists them.
+static PODCASTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_podcasts(on: bool) {
+    PODCASTS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn podcasts() -> bool {
+    PODCASTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A podcast show's page id is "MPSP" and its playlist's id. It's kept whole as the
+/// playlist's id here, since the show's page is what lists its episodes; this is the
+/// playlist id itself, for what YouTube takes that by (saving it, sharing it).
+pub fn list_id(id: &str) -> &str {
+    id.strip_prefix(SHOW_PREFIX).unwrap_or(id)
+}
+
+const SHOW_PREFIX: &str = "MPSP";
 
 // ----------------------------------------------------------------------- search
 
@@ -53,7 +132,9 @@ pub enum Filter {
     /// Playlists made by YouTube Music (not the community ones).
     Playlists,
     Videos,
-    /// Podcast episodes, which play like songs.
+    /// Podcast shows.
+    Podcasts,
+    /// Podcast episodes.
     Episodes,
 }
 
@@ -65,31 +146,47 @@ impl Filter {
             Filter::Artists => "EgWKAQIgAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
             Filter::Playlists => "EgeKAQQoADgBahIQAxAEEAkQDhAKEAUQERAQEBU%3D",
             Filter::Videos => "EgWKAQIQAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
+            Filter::Podcasts => "EgWKAQJQAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
             Filter::Episodes => "EgWKAQJIAWoQEAMQBBAJEAoQBRAREBAQFQ%3D%3D",
         }
     }
 }
 
 async fn search_as(api: &Api, query: &str, filter: Filter, auth: bool) -> anyhow::Result<Vec<Value>> {
-    let v = api.call("search", json!({ "query": query, "params": filter.params() }), auth).await?;
-    let sections = &v["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-    Ok(arr(sections).iter().flat_map(|s| arr(&s["musicShelfRenderer"]["contents"]).iter().cloned()).collect())
+    let mut v = api.call("search", json!({ "query": query, "params": filter.params() }), auth).await?;
+    let sections = &mut v["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
+    // Rows are taken out of the response rather than cloned: a search fans out over six
+    // filters at once, and each row's JSON is deep.
+    let mut rows = Vec::new();
+    if let Some(sections) = sections.as_array_mut() {
+        for s in sections {
+            if let Some(contents) = s["musicShelfRenderer"]["contents"].as_array_mut() {
+                rows.append(contents);
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// `auth`: as the signed-in account, which adds the query to its search history.
 pub async fn search_songs(api: &Api, query: &str, auth: bool) -> anyhow::Result<Vec<Track>> {
-    search_tracks(api, query, Filter::Songs, auth).await
+    Ok(search_as(api, query, Filter::Songs, auth).await?.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect())
 }
 
-/// Song, video or episode rows under any filter.
-pub async fn search_tracks(api: &Api, query: &str, filter: Filter, auth: bool) -> anyhow::Result<Vec<Track>> {
-    Ok(search_as(api, query, filter, auth).await?.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect())
+/// Videos for a search: music videos and plain uploads, which song results leave out.
+pub async fn search_videos(api: &Api, query: &str, auth: bool) -> anyhow::Result<Vec<Track>> {
+    Ok(search_as(api, query, Filter::Videos, auth).await?.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect())
+}
+
+/// Podcast episodes for a search.
+pub async fn search_episodes(api: &Api, query: &str, auth: bool) -> anyhow::Result<Vec<Track>> {
+    Ok(search_as(api, query, Filter::Episodes, auth).await?.iter().filter_map(|i| episode_row(&i["musicResponsiveListItemRenderer"])).collect())
 }
 
 /// Song or video rows, searched as the signed-in account: signed-out searches miss
 /// some major-label releases entirely (the Spotify transfer needs those).
 pub async fn search_tracks_signed_in(api: &Api, query: &str, filter: Filter) -> anyhow::Result<Vec<Track>> {
-    search_tracks(api, query, filter, true).await
+    Ok(search_as(api, query, filter, true).await?.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect())
 }
 
 pub async fn search_cards(api: &Api, query: &str, filter: Filter, auth: bool) -> anyhow::Result<Vec<Card>> {
@@ -137,6 +234,9 @@ pub async fn forget_search(api: &Api, token: &str) -> anyhow::Result<()> {
 // ------------------------------------------------------------- albums, playlists
 
 pub async fn album(api: &Api, id: &str) -> anyhow::Result<Collection> {
+    if uploaded(id) {
+        return upload_album(api, id).await;
+    }
     let v = api.call("browse", json!({ "browseId": id }), false).await?;
     let (mut a, videos) = parse_album(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty album"))?;
     if !videos.is_empty() {
@@ -157,28 +257,128 @@ pub async fn paired_song(api: &Api, video_id: &str) -> anyhow::Result<Option<Tra
 }
 
 fn parse_paired_song(v: &Value, video_id: &str) -> Option<Track> {
+    counterparts(v, video_id).map(half).find(|r| video_type(&[&r["navigationEndpoint"]]) == Some("MUSIC_VIDEO_TYPE_ATV")).and_then(panel_item)
+}
+
+/// A song's music video, and where the song's start comes in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MusicVideo {
+    pub video: Track,
+    /// The video's place at the song's start, in milliseconds: later for an intro before
+    /// the song, earlier for a song that opens with what the video cut. 0 when not known.
+    pub offset_ms: i64,
+}
+
+/// The music video of a song from YouTube's own pair, as [`paired_song`] the other way
+/// round: Premium accounts only, `None` for others.
+pub async fn paired_video(api: &Api, song_id: &str) -> anyhow::Result<Option<MusicVideo>> {
+    let body = json!({"videoId": song_id, "isAudioOnly": true, "enablePersistentPlaylistPanel": true});
+    let v = api.call_signed_in("next", body).await?;
+    Ok(parse_paired_video(&v, song_id))
+}
+
+fn parse_paired_video(v: &Value, song_id: &str) -> Option<MusicVideo> {
+    let c = counterparts(v, song_id).find(|c| music_video(&[&half(c)["navigationEndpoint"]]))?;
+    let video = panel_item(half(c))?;
+    // The pair lines the two up: this far into the song is that far into the video.
+    let seg = &c["segmentMap"]["segment"][0];
+    let ms = |key: &str| seg[key].as_str().and_then(|n| n.parse::<i64>().ok());
+    let offset_ms = ms("counterpartVideoStartTimeMilliseconds").zip(ms("primaryVideoStartTimeMilliseconds")).map_or(0, |(video, song)| video - song);
+    Some(MusicVideo { video, offset_ms })
+}
+
+/// The other version itself, in a pair from [`counterparts`].
+fn half(counterpart: &Value) -> &Value {
+    &counterpart["counterpartRenderer"]["playlistPanelVideoRenderer"]
+}
+
+/// What a `next` answer pairs with `video_id`: its other version, on Premium accounts,
+/// with the `segmentMap` that lines the two up.
+fn counterparts<'a>(v: &'a Value, video_id: &str) -> impl Iterator<Item = &'a Value> {
     let panel = &v["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]
         ["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"];
+    let id = video_id.to_owned();
     arr(&panel["contents"])
         .iter()
         .map(|i| &i["playlistPanelVideoWrapperRenderer"])
-        .filter(|w| w["primaryRenderer"]["playlistPanelVideoRenderer"]["videoId"] == video_id)
+        .filter(move |w| w["primaryRenderer"]["playlistPanelVideoRenderer"]["videoId"] == id.as_str())
         .flat_map(|w| arr(&w["counterpart"]))
-        .map(|c| &c["counterpartRenderer"]["playlistPanelVideoRenderer"])
-        .find(|r| video_type(&[&r["navigationEndpoint"]]) == Some("MUSIC_VIDEO_TYPE_ATV"))
-        .and_then(panel_item)
 }
 
 /// The song version of a music video, by a signed-out search (a signed-in one would
-/// land in the account's search history). Only a sure match counts: [`same_song`].
-pub async fn searched_song(api: &Api, video: &Track) -> anyhow::Result<Option<Track>> {
+/// land in the account's search history). Only a sure match counts: [`same_song`], and with
+/// `clean` only one that isn't explicit (an album's clean edit is often among the hits).
+pub async fn searched_song(api: &Api, video: &Track, clean: bool) -> anyhow::Result<Option<Track>> {
     let title = without_artist(&song_title(&video.title), video);
     let query = match video.artists.first() {
         Some(a) => format!("{title} {}", a.name),
         None => return Ok(None),
     };
     let hits = search_songs(api, &query, false).await?;
-    Ok(hits.into_iter().take(5).find(|h| same_song(video, h)))
+    Ok(hits.into_iter().take(5).find(|h| same_song(video, h) && !(clean && h.explicit)))
+}
+
+/// The music video of a song, by a signed-out videos search (signed in, it would land in
+/// the account's search history). Only an official music video that's a sure match
+/// counts: [`same_song`], the other way round.
+pub async fn searched_video(api: &Api, song: &Track) -> anyhow::Result<Option<Track>> {
+    let Some(artist) = song.artists.first().filter(|_| song.duration.is_some() && !song.has_video()) else { return Ok(None) };
+    let hits = search_videos(api, &format!("{} {}", song.title, artist.name), false).await?;
+    Ok(sure_video(song, hits))
+}
+
+/// Among the first few hits only: further down, a match is more likely another recording.
+fn sure_video(song: &Track, hits: Vec<Track>) -> Option<Track> {
+    hits.into_iter().take(5).find(|h| h.music_video && same_song(h, song))
+}
+
+/// Where a search looks, as the tabs over music.youtube.com's results do: all of YouTube
+/// Music, or only the signed-in account's library or its uploads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scope {
+    #[default]
+    Everywhere,
+    Library,
+    Uploads,
+}
+
+/// What a search of your library or your uploads found: rows that play (episodes apart,
+/// with podcasts shown) and the pages it can open.
+#[derive(Default)]
+pub struct ScopedResults {
+    pub tracks: Vec<Track>,
+    pub episodes: Vec<Track>,
+    pub cards: Vec<Card>,
+}
+
+/// Search only your library or only your uploads, as the account (so the query goes into
+/// its search history, as on the website).
+pub async fn search_in(api: &Api, query: &str, scope: Scope) -> anyhow::Result<ScopedResults> {
+    let params = match scope {
+        Scope::Everywhere => anyhow::bail!("not a search of your own music"),
+        Scope::Library => "agIYBA%3D%3D",
+        Scope::Uploads => "agIYAw%3D%3D",
+    };
+    let v = api.call_signed_in("search", json!({ "query": query, "params": params })).await?;
+    Ok(parse_scoped(&v))
+}
+
+fn parse_scoped(v: &Value) -> ScopedResults {
+    let mut out = ScopedResults::default();
+    // Only the picked tab holds results; the others are links to their own search.
+    let tabs = arr(&v["contents"]["tabbedSearchResultsRenderer"]["tabs"]);
+    let Some(tab) = tabs.iter().map(|t| &t["tabRenderer"]).find(|t| t["selected"] == true) else { return out };
+    let sections = arr(&tab["content"]["sectionListRenderer"]["contents"]);
+    for r in sections.iter().flat_map(|s| arr(&s["musicShelfRenderer"]["contents"])).map(|i| &i["musicResponsiveListItemRenderer"]) {
+        if !r["navigationEndpoint"].is_null() {
+            out.cards.extend(list_card(r));
+        } else if video_type(&[&r["overlay"], &r["flexColumns"][0]]) == Some("MUSIC_VIDEO_TYPE_PODCAST_EPISODE") {
+            out.episodes.extend(episode_row(r).filter(|_| podcasts()));
+        } else {
+            out.tracks.extend(list_item(r));
+        }
+    }
+    out
 }
 
 /// Whether `hit` (a song from a search) is the song of the music video `video`: the same
@@ -390,7 +590,7 @@ fn swap_songs(a: &mut Collection, videos: &[usize], songs: &[AlbumSong]) -> usiz
         let (Some(t), Some(s)) = (a.tracks.get_mut(i), songs.get(i)) else { continue };
         if t.id != s.id && same_title(&t.title, &s.title) {
             (t.id, t.duration) = (s.id.clone(), s.duration.or(t.duration));
-            t.music_video = false;
+            (t.music_video, t.video) = (false, false);
             swapped += 1;
         }
     }
@@ -434,20 +634,7 @@ fn parse_album(v: &Value, id: &str) -> Option<(Collection, Vec<usize>)> {
     let rows = arr(&two["secondaryContents"]["sectionListRenderer"]["contents"]).iter().flat_map(|s| arr(&s["musicShelfRenderer"]["contents"]));
     let rows: Vec<(Track, bool)> = rows.filter_map(|i| Some((list_item(&i["musicResponsiveListItemRenderer"])?, is_video(i)))).collect();
     let videos = rows.iter().enumerate().filter(|(_, (_, video))| *video).map(|(i, _)| i).collect();
-    let tracks = rows
-        .into_iter()
-        .map(|(mut t, _)| {
-            // Album rows leave out what the header already says.
-            if t.thumbs.is_empty() {
-                t.thumbs = thumbs.clone();
-            }
-            if t.artists.is_empty() {
-                t.artists = artists.clone();
-            }
-            t.album.get_or_insert_with(|| link.clone());
-            t
-        })
-        .collect();
+    let tracks = rows.into_iter().map(|(t, _)| album_song(t, &thumbs, &artists, &link)).collect();
     // The album's playlist ID, which saving it to the library needs.
     let save_id = arr(&h["buttons"]).iter().find_map(|b| {
         let play = &b["musicPlayButtonRenderer"]["playNavigationEndpoint"];
@@ -469,8 +656,21 @@ fn parse_album(v: &Value, id: &str) -> Option<(Collection, Vec<usize>)> {
         set_ids: Vec::new(),
         count: None,
         owned: false,
+        sorts: Vec::new(),
     };
     Some((a, videos))
+}
+
+/// An album's row, with what it leaves out because the header already says it.
+fn album_song(mut t: Track, thumbs: &[Thumb], artists: &[Link], album: &Link) -> Track {
+    if t.thumbs.is_empty() {
+        t.thumbs = thumbs.to_vec();
+    }
+    if t.artists.is_empty() {
+        t.artists = artists.to_vec();
+    }
+    t.album.get_or_insert_with(|| album.clone());
+    t
 }
 
 /// A playlist (including mixes and Liked Music), with up to `limit` tracks (`None`: all of them).
@@ -494,7 +694,9 @@ pub async fn playlist(api: &Api, id: &str, auth: bool, limit: Option<usize>) -> 
 /// A playlist's first page (about 100 songs), the next page's token, and how many
 /// songs to stop at: `limit` (`None`: all), or fewer when the header says so.
 pub async fn playlist_start(api: &Api, id: &str, auth: bool, limit: Option<usize>) -> anyhow::Result<(Collection, Option<String>, usize)> {
-    let v = api.call("browse", json!({ "browseId": format!("VL{id}") }), auth).await?;
+    // A podcast show's own page lists its episodes; a playlist's is "VL" and its id.
+    let browse = if id.starts_with(SHOW_PREFIX) { id.to_owned() } else { format!("VL{id}") };
+    let v = api.call("browse", json!({ "browseId": browse }), auth).await?;
     let Some((mut pl, token, count)) = parse_playlist(&v, id) else {
         // A session Google has revoked still gets answers, just signed-out ones.
         anyhow::ensure!(!(auth && api.account().is_some() && crate::ytmapi::logged_out(&v)), "Your YouTube sign-in has expired");
@@ -552,10 +754,36 @@ fn parse_playlist(v: &Value, id: &str) -> Option<(Collection, Option<String>, Op
             tracks,
             set_ids,
             owned: owned(two),
+            sorts: sorts(shelf),
         },
         token,
         count,
     ))
+}
+
+/// Your own playlist's sort menu, with what each order sends to save it. Other lists'
+/// menus (Liked Music's, others' playlists') can't be saved, so they're left out.
+fn sorts(shelf: &Value) -> Vec<crate::backend::PlaylistSort> {
+    let menu = &shelf["header"]["musicSideAlignedItemRenderer"]["startItems"][0]["sortFilterSubMenuRenderer"]["subMenuItems"];
+    arr(menu)
+        .iter()
+        .filter_map(|item| {
+            let actions = &item["serviceEndpoint"]["playlistEditEndpoint"]["actions"];
+            Some(crate::backend::PlaylistSort {
+                name: item["title"].as_str()?.to_owned(),
+                on: item["selected"].as_bool() == Some(true),
+                manual: actions[0]["playlistVideoOrder"] == 0,
+                actions: actions.is_array().then(|| actions.clone())?,
+            })
+        })
+        .collect()
+}
+
+/// Save one of a playlist's sort orders to it (see [`crate::backend::PlaylistSort`]).
+pub async fn sort_playlist(api: &Api, id: &str, actions: Value) -> anyhow::Result<()> {
+    let answer = write(api, "browse/edit_playlist", json!({"playlistId": id, "actions": actions})).await?;
+    anyhow::ensure!(answer["status"].as_str().is_some_and(|s| s.contains("SUCCEEDED")), "YouTube Music didn't confirm the order");
+    Ok(())
 }
 
 /// The header of an album or playlist page; your own playlists wrap it in an editable one.
@@ -576,7 +804,9 @@ fn playlist_continuation(v: &Value) -> (Vec<Track>, Vec<Option<String>>, Option<
     if !items.is_null() {
         return list_page(arr(items));
     }
-    let shelf = &v["continuationContents"]["musicPlaylistShelfContinuation"];
+    let cont = &v["continuationContents"];
+    // A podcast show's episodes continue as a plain shelf.
+    let shelf = if cont["musicPlaylistShelfContinuation"].is_null() { &cont["musicShelfContinuation"] } else { &cont["musicPlaylistShelfContinuation"] };
     let (tracks, ids, token) = list_page(arr(&shelf["contents"]));
     (tracks, ids, token.or_else(|| continuation(shelf)))
 }
@@ -588,6 +818,10 @@ fn list_page(items: &[Value]) -> (Vec<Track>, Vec<Option<String>>, Option<String
         .iter()
         .filter_map(|i| {
             let r = &i["musicResponsiveListItemRenderer"];
+            if r.is_null() {
+                // A podcast show's page lists its episodes this way.
+                return Some((episode(&i["musicMultiRowListItemRenderer"])?, None));
+            }
             Some((list_item(r)?, r["playlistItemData"]["playlistSetVideoId"].as_str().map(str::to_owned)))
         })
         .unzip();
@@ -596,9 +830,40 @@ fn list_page(items: &[Value]) -> (Vec<Track>, Vec<Option<String>>, Option<String
 
 // ----------------------------------------------------------------------- artists
 
-pub async fn artist(api: &Api, id: &str) -> anyhow::Result<ArtistPage> {
-    let v = api.call("browse", json!({ "browseId": id }), false).await?;
-    parse_artist(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty artist page"))
+/// `auth`: ask as the account, so the page says whether it's subscribed.
+pub async fn artist(api: &Api, id: &str, auth: bool) -> anyhow::Result<ArtistPage> {
+    if uploaded(id) {
+        return upload_artist(api, id).await;
+    }
+    let asked = std::time::Instant::now();
+    let body = json!({ "browseId": id });
+    // The page is anyone's to see: a session YouTube turns away gets it signed out, the
+    // way a revoked one is answered anyway.
+    let (v, fell_back) = match api.call("browse", body.clone(), auth).await {
+        Err(e) if auth && api.account().is_some() && crate::ytmapi::session_refused(&e) => {
+            log::warn!("artist {id} signed in: {e:#}; asking signed out");
+            (api.call("browse", body, false).await?, true)
+        }
+        r => (r?, false),
+    };
+    let mut page = parse_artist(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty artist page"))?;
+    page.asked = asked;
+    if auth && api.account().is_some() && answered_signed_out(fell_back, &v) {
+        unknown_subscription(&mut page);
+    }
+    Ok(page)
+}
+
+/// A signed-in ask answered as no one: by the fallback, or a session Google revoked.
+fn answered_signed_out(fell_back: bool, v: &Value) -> bool {
+    fell_back || crate::ytmapi::logged_out(v)
+}
+
+/// Whether the account subscribes isn't known: no pill, rather than a Subscribe that
+/// would only fail.
+fn unknown_subscription(page: &mut ArtistPage) {
+    page.subscribed = false;
+    page.channel_id = None;
 }
 
 fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
@@ -612,12 +877,20 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
         id: id.to_owned(),
         banner: thumbs(&h["thumbnail"]["musicThumbnailRenderer"]),
         subscribers,
+        subscribed: sub["subscribed"].as_bool().unwrap_or(false),
+        channel_id: sub["channelId"].as_str().map(str::to_owned),
+        asked: std::time::Instant::now(),
         description: text(&h["description"]),
         top: Vec::new(),
         top_playlist: None,
         albums: Vec::new(),
+        library: Vec::new(),
+        singles: Vec::new(),
         playlists: Vec::new(),
         similar: Vec::new(),
+        videos: Vec::new(),
+        albums_more: None,
+        singles_more: None,
         name,
     };
     for s in sections {
@@ -632,23 +905,105 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
             page.description = text(&s["musicDescriptionShelfRenderer"]["description"]);
         }
         let carousel = &s["musicCarouselShelfRenderer"];
-        let title = text(&carousel["header"]["musicCarouselShelfBasicHeaderRenderer"]["title"]).unwrap_or_default();
+        let header = &carousel["header"]["musicCarouselShelfBasicHeaderRenderer"];
+        // "From your library": its title leads to the artist's songs in your library ("MPLA"
+        // and their channel), whatever language it's in.
+        if header["title"]["runs"][0]["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str().is_some_and(|b| b.starts_with("MPLA")) {
+            page.library = arr(&carousel["contents"]).iter().filter_map(|i| two_row(&i["musicTwoRowItemRenderer"])).collect();
+            continue;
+        }
+        let title = text(&header["title"]).unwrap_or_default();
         // Release shelves list just the year; spell out the kind and artist like elsewhere.
-        let kind = if title.starts_with("Single") { "Single" } else { "Album" };
+        // Singles (and EPs) keep their own shelf, so each gets its own Show all.
+        let singles_shelf = title.starts_with("Single") || title.starts_with("EP");
+        let kind = if singles_shelf { "Single" } else { "Album" };
+        // The shelf's More button, where YouTube lists everything the artist has for this
+        // kind of release (a discography browse). Only the release shelves get one that
+        // leads there; other shelves' More opens a playlist or videos, not a discography.
+        let more = if singles_shelf || title.starts_with("Album") { more_link(carousel) } else { None };
+        let sink = if singles_shelf { &mut page.singles } else { &mut page.albums };
         for card in arr(&carousel["contents"]).iter().filter_map(|i| two_row(&i["musicTwoRowItemRenderer"])) {
             match card.target {
                 Target::Album(_) => {
                     let subtitle = [kind, me.name.as_str(), card.subtitle.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" • ");
                     let links = if card.links.is_empty() { vec![me.clone()] } else { card.links.clone() };
-                    page.albums.push(Card { subtitle, links, ..card });
+                    sink.push(Card { subtitle, links, ..card });
                 }
                 Target::Playlist(_) => page.playlists.push(card),
                 Target::Artist(_) => page.similar.push(card),
+                // a video or live performance: a song card that plays as one
+                Target::Song(ref t) if t.has_video() => page.videos.push(card),
                 Target::Song(_) => {}
             }
         }
+        // An empty shelf is dropped later; its More survives, since a discography can
+        // hold releases the shelf's first ten cards didn't.
+        if singles_shelf {
+            page.singles_more = more.or(page.singles_more.take());
+        } else {
+            page.albums_more = more.or(page.albums_more.take());
+        }
     }
     Some(page)
+}
+
+/// A carousel's More button (`moreContentButton.buttonRenderer`), where it opens a
+/// discography browse: the browseId and params that list the whole shelf.
+fn more_link(carousel: &Value) -> Option<ShelfLink> {
+    let nav = &carousel["header"]["musicCarouselShelfBasicHeaderRenderer"]["moreContentButton"]["buttonRenderer"]["navigationEndpoint"];
+    let browse_id = nav["browseEndpoint"]["browseId"].as_str()?.trim().to_owned();
+    if browse_id.is_empty() {
+        return None;
+    }
+    Some(ShelfLink {
+        browse_id,
+        params: nav["browseEndpoint"]["params"].as_str().unwrap_or_default().trim().to_owned(),
+    })
+}
+
+/// An artist shelf's Show all: everything the artist has for that shelf, from the
+/// discography browse its More button opens. YouTube answers with a grid of cards
+/// (`gridRenderer`); any trailing pages are followed, bounded, so "all" means all.
+pub async fn discography(api: &Api, browse_id: &str, params: &str) -> anyhow::Result<Vec<Card>> {
+    let mut body = json!({ "browseId": browse_id });
+    if !params.is_empty() {
+        body["params"] = json!(params);
+    }
+    let v = api.call("browse", body, false).await?;
+    let mut cards = discog_cards(&v);
+    // A shelf long enough to page (rare: YouTube mostly answers in one grid) — follow
+    // its continuations, bounded, so a very long discography still ends somewhere.
+    let mut token = find_key(&v, "nextGridContinuationData").and_then(|c| c["continuation"].as_str()).map(str::to_owned);
+    for _ in 0..10 {
+        let Some(t) = token.filter(|t| !t.is_empty()) else { break };
+        let more = api.call("browse", json!({ "continuation": t }), false).await?;
+        let page = find_key(&more, "gridContinuation");
+        let Some(page) = page else { break };
+        let added = discog_cards(page);
+        let done = added.is_empty();
+        cards.extend(added);
+        token = find_key(page, "nextGridContinuationData").and_then(|c| c["continuation"].as_str()).map(str::to_owned);
+        if done {
+            break;
+        }
+    }
+    Ok(cards)
+}
+
+/// The cards of a discography grid (`gridRenderer`, or a shelf's list or carousel when
+/// YouTube answers with one of those instead).
+fn discog_cards(v: &Value) -> Vec<Card> {
+    static EMPTY: [Value; 0] = [];
+    let items = if let Some(g) = find_key(v, "gridRenderer") {
+        arr(&g["items"])
+    } else if let Some(shelf) = find_key(v, "musicShelfRenderer") {
+        arr(&shelf["contents"])
+    } else if let Some(carousel) = find_key(v, "musicCarouselShelfRenderer") {
+        arr(&carousel["contents"])
+    } else {
+        &EMPTY[..]
+    };
+    items.iter().filter_map(|i| two_row(&i["musicTwoRowItemRenderer"]).or_else(|| list_card(&i["musicResponsiveListItemRenderer"]))).collect()
 }
 
 // ------------------------------------------------------------- radio and explore
@@ -656,9 +1011,36 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
 /// Songs to play after `video_id` (its radio), at least `limit` when there are enough.
 /// A music video's radio is music videos only (a song's is songs): then those, rather
 /// than nothing. Its song's radio is the one to ask for.
+/// A song's first page of comments: its Comments tab (Up next, Lyrics, Comments, Related)
+/// holds the token for it. `None`: the song has comments turned off (the tab is then just
+/// a message) or has no such tab.
+pub async fn comments(api: &Api, video_id: &str, auth: bool) -> anyhow::Result<Option<Value>> {
+    let watch = api.call("next", json!({ "videoId": video_id }), auth).await?;
+    let tabs = &watch["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"];
+    let tab = tabs.as_array().into_iter().flatten().find(|t| t["tabRenderer"]["title"] == "Comments");
+    let Some(token) = tab.and_then(|t| first_string(&t["tabRenderer"]["content"], "continuation")) else { return Ok(None) };
+    api.call("next", json!({ "continuation": token }), auth).await.map(Some)
+}
+
+/// The first string keyed `key` anywhere under `v`.
+fn first_string(v: &Value, key: &str) -> Option<String> {
+    match v {
+        Value::Object(m) => m.get(key).and_then(Value::as_str).map(str::to_owned).or_else(|| m.values().find_map(|x| first_string(x, key))),
+        Value::Array(a) => a.iter().find_map(|x| first_string(x, key)),
+        _ => None,
+    }
+}
+
 pub async fn radio(api: &Api, video_id: &str, auth: bool, limit: usize) -> anyhow::Result<Vec<Track>> {
+    radio_playlist(api, &format!("RDAMVM{video_id}"), auth, limit).await
+}
+
+/// A radio's queue, whatever seeded it — a song's (`RDAMVM…`) or an artist's
+/// (`RDATAR…`). The same `next` panel, the same paging; Home's "More like" rows
+/// grow from the artist ones.
+pub async fn radio_playlist(api: &Api, playlist_id: &str, auth: bool, limit: usize) -> anyhow::Result<Vec<Track>> {
     let body = json!({
-        "playlistId": format!("RDAMVM{video_id}"),
+        "playlistId": playlist_id,
         "params": "wAEB8gECeAE%3D",
         "enablePersistentPlaylistPanel": true,
         "isAudioOnly": true,
@@ -671,6 +1053,31 @@ pub async fn radio(api: &Api, video_id: &str, auth: bool, limit: usize) -> anyho
     while radio_tracks(&items).count() < limit {
         let Some(t) = token.take() else { break };
         let body = json!({ "continuation": t, "enablePersistentPlaylistPanel": true, "isAudioOnly": true });
+        let v = api.call("next", body, auth).await?;
+        let (more, next) = panel_page(&v["continuationContents"]["playlistPanelContinuation"]);
+        if more.is_empty() {
+            break;
+        }
+        items.extend(more);
+        token = next;
+    }
+    Ok(radio_tracks(&items).cloned().collect())
+}
+
+/// The mix YouTube itself lines up after `video_id` — the watch page's up-next
+/// panel, not a radio asked of it: the second source when a radio comes back
+/// thin or not at all, the way Mochy's infinite queue falls through to related
+/// songs. A signed-out session sometimes answers with an empty panel; that is
+/// the next source's cue.
+pub async fn up_next(api: &Api, video_id: &str, auth: bool, limit: usize) -> anyhow::Result<Vec<Track>> {
+    let body = json!({ "videoId": video_id, "isAudioOnly": true });
+    let v = api.call("next", body, auth).await?;
+    let panel = &v["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]
+        ["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"];
+    let (mut items, mut token) = panel_page(panel);
+    while radio_tracks(&items).count() < limit {
+        let Some(t) = token.take() else { break };
+        let body = json!({ "continuation": t, "isAudioOnly": true });
         let v = api.call("next", body, auth).await?;
         let (more, next) = panel_page(&v["continuationContents"]["playlistPanelContinuation"]);
         if more.is_empty() {
@@ -845,8 +1252,70 @@ pub async fn saved_playlists(api: &Api) -> anyhow::Result<Vec<Card>> {
     saved(api, "4qmFsgIrEhdGRW11c2ljX2xpa2VkX3BsYXlsaXN0cxoQZ2dNR0tnUUlBQkFCb0FZQg%3D%3D").await
 }
 
+/// The podcast shows saved to the library, with its own lists (New episodes, Episodes
+/// for later) first, as YouTube Music has them.
+pub async fn saved_podcasts(api: &Api) -> anyhow::Result<Vec<Card>> {
+    let v = api.call_signed_in("browse", json!({ "browseId": "FEmusic_library_non_music_audio_list" })).await?;
+    let sections = arr(&v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]);
+    let mut cards = grid_cards(sections);
+    let mut token = sections.iter().find_map(|s| grid_next(&s["gridRenderer"]));
+    for _ in 0..100 {
+        let Some(t) = token.take() else { break };
+        let Ok(v) = api.call_signed_in("browse", json!({ "continuation": t })).await else { break };
+        let (more, next) = grid_continuation(&v);
+        if more.is_empty() {
+            break;
+        }
+        cards.extend(more);
+        token = next;
+    }
+    Ok(cards)
+}
+
 pub async fn saved_albums(api: &Api) -> anyhow::Result<Vec<Card>> {
     saved(api, "4qmFsgIoEhRGRW11c2ljX2xpa2VkX2FsYnVtcxoQZ2dNR0tnUUlBQkFCb0FZQg%3D%3D").await
+}
+
+/// The artists the account subscribes to, as Library › Artists lists them.
+pub async fn subscribed_artists(api: &Api) -> anyhow::Result<Vec<Card>> {
+    let v = api.call_signed_in("browse", json!({ "browseId": "FEmusic_library_corpus_artists" })).await?;
+    let sections = arr(&v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]);
+    // None subscribed: a message stands where the list would.
+    let Some(shelf) = sections.iter().map(|s| &s["musicShelfRenderer"]).find(|s| !s.is_null()) else { return Ok(Vec::new()) };
+    let mut cards = list_cards(arr(&shelf["contents"]));
+    let mut token = continuation(shelf).or_else(|| item_token(arr(&shelf["contents"])));
+    for _ in 0..100 {
+        let Some(t) = token.take() else { break };
+        // A later page failing keeps the pages already loaded.
+        let v = match api.call_signed_in("browse", json!({ "continuation": t })).await {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("subscribed artists page: {e}");
+                break;
+            }
+        };
+        let (more, next) = shelf_continuation(&v);
+        if more.is_empty() {
+            break;
+        }
+        cards.extend(more);
+        token = next;
+    }
+    Ok(cards)
+}
+
+/// A following page of a list shelf: its rows, and the token for the page after.
+fn shelf_continuation(v: &Value) -> (Vec<Card>, Option<String>) {
+    let appended = arr(&v["onResponseReceivedActions"][0]["appendContinuationItemsAction"]["continuationItems"]);
+    if !appended.is_empty() {
+        return (list_cards(appended), item_token(appended));
+    }
+    let more = &v["continuationContents"]["musicShelfContinuation"];
+    (list_cards(arr(&more["contents"])), continuation(more))
+}
+
+fn list_cards(items: &[Value]) -> Vec<Card> {
+    items.iter().filter_map(|i| list_card(&i["musicResponsiveListItemRenderer"])).collect()
 }
 
 /// The signed-in account's name and photo, as its account menu shows them (for a brand
@@ -956,16 +1425,37 @@ pub async fn history(api: &Api) -> anyhow::Result<Vec<Track>> {
 
 /// Songs the account uploaded (Library > Uploads on music.youtube.com).
 pub async fn uploads(api: &Api) -> anyhow::Result<Vec<Track>> {
-    let v = api.call_signed_in("browse", json!({ "browseId": "FEmusic_library_privately_owned_tracks" })).await?;
-    let tabs = arr(&v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"]);
-    let shelf = tabs
-        .iter()
-        .flat_map(|t| arr(&t["tabRenderer"]["content"]["sectionListRenderer"]["contents"]))
-        .map(|c| &c["musicShelfRenderer"])
-        .find(|s| !s.is_null());
-    let Some(shelf) = shelf else { return Ok(Vec::new()) };
+    let v = api.call_signed_in("browse", json!({ "browseId": format!("{UPLOADS}tracks") })).await?;
+    let Some(shelf) = upload_shelf(&v) else { return Ok(Vec::new()) };
     let mut tracks = upload_rows(shelf);
-    let mut token = continuation(shelf);
+    tracks.extend(more_uploads(api, continuation(shelf)).await?);
+    Ok(tracks)
+}
+
+/// One of your uploaded albums (opened from its songs, or a search of your uploads). Only
+/// the account sees it, so it's asked for as the account.
+async fn upload_album(api: &Api, id: &str) -> anyhow::Result<Collection> {
+    let v = api.call_signed_in("browse", json!({ "browseId": id })).await?;
+    let (mut a, token) = parse_upload_album(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty album"))?;
+    let link = Link { name: a.title.clone(), id: Some(id.to_owned()) };
+    for t in more_uploads(api, token).await? {
+        let t = album_song(t, &a.thumbs, &a.artists, &link);
+        a.tracks.push(t);
+    }
+    Ok(a)
+}
+
+/// One of your uploads' artists: the page lists your songs by them, as on the website.
+async fn upload_artist(api: &Api, id: &str) -> anyhow::Result<ArtistPage> {
+    let v = api.call_signed_in("browse", json!({ "browseId": id })).await?;
+    let (mut page, token) = parse_upload_artist(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty artist page"))?;
+    page.top.extend(more_uploads(api, token).await?);
+    Ok(page)
+}
+
+/// The songs after `token` on a page of your uploads, up to 20 pages more.
+async fn more_uploads(api: &Api, mut token: Option<String>) -> anyhow::Result<Vec<Track>> {
+    let mut tracks = Vec::new();
     for _ in 0..20 {
         let Some(t) = token.take() else { break };
         let v = api.call_signed_in("browse", json!({ "continuation": t })).await?;
@@ -976,8 +1466,107 @@ pub async fn uploads(api: &Api) -> anyhow::Result<Vec<Track>> {
     Ok(tracks)
 }
 
+/// The songs shelf of a page of your uploads: Library › Uploads, an uploaded artist's or
+/// album's. In one column (as ytmusicapi reads them), or beside the header as other albums now are.
+fn upload_shelf(v: &Value) -> Option<&Value> {
+    let single = arr(&v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"]).iter().flat_map(|t| arr(&t["tabRenderer"]["content"]["sectionListRenderer"]["contents"]));
+    let beside = arr(&v["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]["sectionListRenderer"]["contents"]);
+    single.chain(beside).map(|c| &c["musicShelfRenderer"]).find(|s| !s.is_null())
+}
+
 fn upload_rows(shelf: &Value) -> Vec<Track> {
-    arr(&shelf["contents"]).iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect()
+    arr(&shelf["contents"]).iter().filter_map(|i| upload_row(&i["musicResponsiveListItemRenderer"])).collect()
+}
+
+/// An uploaded song's row. Some may name the song only in their menu (Play next, Add to
+/// queue), which is where ytmusicapi reads it from.
+fn upload_row(r: &Value) -> Option<Track> {
+    list_item(r).or_else(|| {
+        let id = arr(&r["menu"]["menuRenderer"]["items"]).iter().find_map(|i| {
+            let queued = &i["menuServiceItemRenderer"]["serviceEndpoint"]["queueAddEndpoint"]["queueTarget"]["videoId"];
+            queued.as_str().or_else(|| i["menuNavigationItemRenderer"]["navigationEndpoint"]["watchEndpoint"]["videoId"].as_str())
+        })?;
+        let mut r = r.clone();
+        r["playlistItemData"] = json!({ "videoId": id });
+        list_item(&r)
+    })
+}
+
+fn is_year(s: &str) -> bool {
+    s.len() == 4 && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// An uploaded album and the token for more of its songs. Its header is the one albums had
+/// before 2024 ("Album • Artist • 2020" under the title), or the one they have now.
+fn parse_upload_album(v: &Value, id: &str) -> Option<(Collection, Option<String>)> {
+    let h = std::iter::once(&v["header"]["musicDetailHeaderRenderer"]).chain(header(&v["contents"]["twoColumnBrowseResultsRenderer"])).find(|h| !h.is_null())?;
+    let title = text(&h["title"])?;
+    let mut parts = links(&h["subtitle"]);
+    let kind = match parts.first() {
+        Some(p) if p.id.is_none() && !is_year(&p.name) => parts.remove(0).name,
+        _ => "Album".to_owned(),
+    };
+    let year = parts.iter().position(|p| is_year(&p.name)).map(|i| parts.remove(i).name);
+    let strapline = links(&h["straplineTextOne"]);
+    let artists = if strapline.is_empty() { parts } else { strapline };
+    let names = artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+    let subtitle = [Some(kind), (!names.is_empty()).then_some(names), year].into_iter().flatten().collect::<Vec<_>>().join(" • ");
+    let thumb = &h["thumbnail"];
+    let thumbs = thumbs(if thumb["croppedSquareThumbnailRenderer"].is_null() { &thumb["musicThumbnailRenderer"] } else { &thumb["croppedSquareThumbnailRenderer"] });
+    let link = Link { name: title.clone(), id: Some(id.to_owned()) };
+    let shelf = upload_shelf(v);
+    let tracks = shelf.map(upload_rows).unwrap_or_default().into_iter().map(|t| album_song(t, &thumbs, &artists, &link)).collect();
+    let a = Collection {
+        id: id.to_owned(),
+        is_album: true,
+        // Not one to save to the library: it's in your uploads.
+        save_id: None,
+        title,
+        subtitle,
+        artists,
+        description: text(&h["description"]).or_else(|| text(&h["description"]["musicDescriptionShelfRenderer"]["description"])),
+        thumbs,
+        tracks,
+        set_ids: Vec::new(),
+        count: None,
+        owned: false,
+        sorts: Vec::new(),
+    };
+    Some((a, shelf.and_then(continuation)))
+}
+
+/// An uploaded artist's page and the token for more of its songs: their name, and your
+/// songs by them.
+fn parse_upload_artist(v: &Value, id: &str) -> Option<(ArtistPage, Option<String>)> {
+    let shelf = upload_shelf(v);
+    let top = shelf.map(upload_rows).unwrap_or_default();
+    // The header's title, or the name the songs give the artist.
+    let name = v["header"]
+        .as_object()
+        .and_then(|h| h.values().find_map(|h| text(&h["title"])))
+        .or_else(|| top.iter().flat_map(|t| &t.artists).find(|a| a.id.as_deref() == Some(id)).map(|a| a.name.clone()))
+        .or_else(|| top.first()?.artists.first().map(|a| a.name.clone()))?;
+    let page = ArtistPage {
+        id: id.to_owned(),
+        name,
+        banner: Vec::new(),
+        subscribers: None,
+        subscribed: false,
+        channel_id: None,
+        asked: std::time::Instant::now(),
+        description: None,
+        top,
+        top_playlist: None,
+        albums: Vec::new(),
+        library: Vec::new(),
+        singles: Vec::new(),
+        playlists: Vec::new(),
+        similar: Vec::new(),
+        videos: Vec::new(),
+        albums_more: None,
+        singles_more: None,
+    };
+    Some((page, shelf.and_then(continuation)))
 }
 
 // -------------------------------------------------------------------------- edits
@@ -989,19 +1578,17 @@ pub async fn set_like(api: &Api, video_id: &str, like: bool) -> anyhow::Result<(
     Ok(())
 }
 
-pub async fn dislike(api: &Api, video_id: &str) -> anyhow::Result<()> {
-    write(api, "like/dislike", json!({"target": {"videoId": video_id}})).await?;
-    Ok(())
-}
-
 /// Tell YouTube the account played a song, so it lands in watch history (and from
 /// there in Recap, recommendations and "Listen again"), the way music.youtube.com does:
 /// the signed-in player response carries a stats URL that the web player pings once
 /// playback starts. Streams come from other clients, so this asks for the player
 /// response only to get that URL. What it returns then reports how much of the song
 /// was heard ([`report_watchtime`]), as the web player does while it plays.
-pub async fn report_play(api: &Api, video_id: &str) -> anyhow::Result<Watchtime> {
-    let player = api.call_signed_in("player", json!({"videoId": video_id, "contentCheckOk": true, "racyCheckOk": true})).await?;
+///
+/// `sts` is the current player's signatureTimestamp. Without it YouTube answers
+/// UNPLAYABLE ("The page needs to be reloaded") and leaves the stats URL out.
+pub async fn report_play(api: &Api, video_id: &str, sts: Option<u32>) -> anyhow::Result<Watchtime> {
+    let player = api.call_signed_in("player", report_play_body(video_id, sts)).await?;
     let tracking = &player["playbackTracking"];
     let url = tracking["videostatsPlaybackUrl"]["baseUrl"]
         .as_str()
@@ -1014,6 +1601,14 @@ pub async fn report_play(api: &Api, video_id: &str) -> anyhow::Result<Watchtime>
         flush_at: arr(&tracking["videostatsScheduledFlushWalltimeSeconds"]).iter().filter_map(Value::as_u64).collect(),
         flush_every: tracking["videostatsDefaultFlushIntervalSeconds"].as_u64().filter(|&s| s > 0).unwrap_or(40),
     })
+}
+
+fn report_play_body(video_id: &str, sts: Option<u32>) -> Value {
+    let mut body = json!({"videoId": video_id, "contentCheckOk": true, "racyCheckOk": true});
+    if let Some(sts) = sts {
+        body["playbackContext"] = json!({"contentPlaybackContext": {"signatureTimestamp": sts}});
+    }
+    body
 }
 
 /// One play's listening-time reports: where they go and when the web player sends them.
@@ -1084,6 +1679,13 @@ pub async fn add_videos(api: &Api, playlist_id: &str, video_ids: &[String]) -> a
     Ok(())
 }
 
+/// Subscribe to an artist's channel, or unsubscribe.
+pub async fn set_subscribed(api: &Api, channel_id: &str, on: bool) -> anyhow::Result<()> {
+    let endpoint = if on { "subscription/subscribe" } else { "subscription/unsubscribe" };
+    write(api, endpoint, json!({"channelIds": [channel_id]})).await?;
+    Ok(())
+}
+
 pub async fn edit_playlist(api: &Api, id: &str, title: &str, description: &str, privacy: Option<&str>) -> anyhow::Result<()> {
     let mut actions = vec![
         json!({"action": "ACTION_SET_PLAYLIST_NAME", "playlistName": title}),
@@ -1114,7 +1716,7 @@ pub async fn delete_playlist(api: &Api, id: &str) -> anyhow::Result<()> {
 
 pub async fn save_collection(api: &Api, playlist_id: &str, save: bool) -> anyhow::Result<()> {
     let endpoint = if save { "like/like" } else { "like/removelike" };
-    write(api, endpoint, json!({"target": {"playlistId": playlist_id}})).await?;
+    write(api, endpoint, json!({"target": {"playlistId": list_id(playlist_id)}})).await?;
     Ok(())
 }
 
@@ -1244,7 +1846,11 @@ fn shelf(s: &Value) -> Option<Shelf> {
     let strapline = text(&h["strapline"]);
     let strap_thumb = thumbs(&h["thumbnail"]["musicThumbnailRenderer"]).into_iter().next().map(|t| t.url);
     let items: Vec<&Value> = arr(&r["contents"]).iter().filter(|i| !is_video(i)).collect();
-    let kind = if items.iter().any(|i| !i["musicResponsiveListItemRenderer"].is_null()) {
+    let kind = if podcasts() && items.iter().any(|i| !i["musicMultiRowListItemRenderer"].is_null()) {
+        let tracks: Vec<Track> = items.iter().filter_map(|i| episode(&i["musicMultiRowListItemRenderer"])).collect();
+        let rows = r["numItemsPerColumn"].as_str().and_then(|n| n.parse().ok()).unwrap_or(3);
+        ShelfKind::Songs { tracks, rows }
+    } else if items.iter().any(|i| !i["musicResponsiveListItemRenderer"].is_null()) {
         let tracks: Vec<Track> = items.iter().filter_map(|i| list_item(&i["musicResponsiveListItemRenderer"])).collect();
         let rows = r["numItemsPerColumn"].as_str().and_then(|n| n.parse().ok()).unwrap_or(4);
         ShelfKind::Songs { tracks, rows }
@@ -1269,12 +1875,11 @@ fn two_row(r: &Value) -> Option<Card> {
             id: video_id.to_owned(),
             title: title.clone(),
             artists: artist_links(&r["subtitle"]),
-            album: None,
-            duration: None,
             thumbs: thumbs.clone(),
-            track_nr: None,
-            plays: None,
             music_video: music_video(&[nav]),
+            video: has_video(&[nav]),
+            explicit: explicit(&r["subtitleBadges"]),
+            ..Default::default()
         })
     } else if let Some(playlist) = nav["watchPlaylistEndpoint"]["playlistId"].as_str() {
         Target::Playlist(playlist.to_owned())
@@ -1288,10 +1893,22 @@ fn two_row(r: &Value) -> Option<Card> {
 /// What a browse endpoint opens.
 fn target(nav: &Value) -> Option<Target> {
     let id = nav["browseEndpoint"]["browseId"].as_str()?.to_owned();
+    // Your uploads' own artist and album pages, whatever page type their links carry; Library
+    // › Uploads' own tabs open another way.
+    if id.starts_with(UPLOADS) {
+        return match upload_kind(&id)? {
+            "MUSIC_PAGE_TYPE_ALBUM" => Some(Target::Album(id)),
+            _ => Some(Target::Artist(id)),
+        };
+    }
     Some(match page_type(nav)? {
+        // An artist's songs in your library ("MPLA" and their channel): their own page opens.
+        "MUSIC_PAGE_TYPE_LIBRARY_ARTIST" => Target::Artist(id.strip_prefix("MPLA").unwrap_or(&id).to_owned()),
         "MUSIC_PAGE_TYPE_ALBUM" | "MUSIC_PAGE_TYPE_AUDIOBOOK" => Target::Album(id),
         "MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL" => Target::Artist(id),
         "MUSIC_PAGE_TYPE_PLAYLIST" => Target::Playlist(id.strip_prefix("VL").unwrap_or(&id).to_owned()),
+        // A show opens as the playlist it is, by its own page (see `list_id`).
+        "MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE" if podcasts() => Target::Playlist(id),
         _ => return None,
     })
 }
@@ -1317,6 +1934,48 @@ fn list_card(r: &Value) -> Option<Card> {
     Some(Card { title, subtitle, thumbs: thumbs(&r["thumbnail"]["musicThumbnailRenderer"]), target, round, links: artist_links(detail) })
 }
 
+/// A podcast episode as Home's Podcasts feed and a show's page list it: its show stands
+/// where a song's artist does, linked to the show's page.
+fn episode(r: &Value) -> Option<Track> {
+    let id = r["onTap"]["watchEndpoint"]["videoId"].as_str()?.to_owned();
+    let length = runs(&r["playbackProgress"]["musicPlaybackProgressRenderer"]["durationText"]).filter_map(|run| run["text"].as_str()).find_map(spoken_duration);
+    Some(Track { id, title: text(&r["title"])?, artists: show_links(&r["secondTitle"]), duration: length, thumbs: thumbs(&r["thumbnail"]["musicThumbnailRenderer"]), ..Default::default() })
+}
+
+/// An episode in search results: "Episode • Dec 28, 2025 • <its show>" where a song has
+/// its artists, which is what `list_item` would take the date for.
+fn episode_row(r: &Value) -> Option<Track> {
+    let mut t = list_item(r)?;
+    t.artists = show_links(&r["flexColumns"][1]["musicResponsiveListItemFlexColumnRenderer"]["text"]);
+    t.album = None;
+    Some(t)
+}
+
+/// The podcast shows named in a line of text, each linked to its page.
+fn show_links(v: &Value) -> Vec<Link> {
+    runs(v)
+        .filter(|run| page_type(run) == Some("MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE"))
+        .map(|run| Link { name: run["text"].as_str().unwrap_or_default().to_owned(), id: browse_id(run) })
+        .collect()
+}
+
+/// "3 hr 36 min", "49 min", "1 hr", "45 sec" → seconds.
+fn spoken_duration(s: &str) -> Option<u32> {
+    let mut words = s.split_whitespace();
+    let (mut total, mut any) = (0u32, false);
+    while let (Some(n), Some(unit)) = (words.next(), words.next()) {
+        let n: u32 = n.parse().ok()?;
+        total += n * match unit.trim_end_matches('s') {
+            "hr" | "hour" => 3600,
+            "min" => 60,
+            "sec" => 1,
+            _ => return None,
+        };
+        any = true;
+    }
+    any.then_some(total)
+}
+
 /// A song row (playlists, search, history, album tracks, Quick picks).
 /// Music videos and other uploaded videos (not songs). Feeds, charts and radios drop them;
 /// your own playlists, likes and history keep what you put there.
@@ -1324,7 +1983,12 @@ fn is_video(item: &Value) -> bool {
     // Only where the item itself plays: a playlist card can hold its first video's type too.
     let (two, row) = (&item["musicTwoRowItemRenderer"], &item["musicResponsiveListItemRenderer"]);
     let own = [&two["navigationEndpoint"], &row["overlay"], &row["flexColumns"][0], &item["navigationEndpoint"]];
-    matches!(video_type(&own), Some("MUSIC_VIDEO_TYPE_OMV" | "MUSIC_VIDEO_TYPE_UGC" | "MUSIC_VIDEO_TYPE_OFFICIAL_SOURCE_MUSIC"))
+    has_video(&own)
+}
+
+/// A video of any kind (an official music video, a channel's upload), not a song.
+fn has_video(parts: &[&Value]) -> bool {
+    matches!(video_type(parts), Some("MUSIC_VIDEO_TYPE_OMV" | "MUSIC_VIDEO_TYPE_UGC" | "MUSIC_VIDEO_TYPE_OFFICIAL_SOURCE_MUSIC"))
 }
 
 /// The first `musicVideoType` under these parts of an item.
@@ -1345,6 +2009,11 @@ fn music_video(parts: &[&Value]) -> bool {
     video_type(parts) == Some("MUSIC_VIDEO_TYPE_OMV")
 }
 
+/// Marked explicit: an "E" among the item's badges (rows' `badges`, cards' `subtitleBadges`).
+fn explicit(badges: &Value) -> bool {
+    arr(badges).iter().any(|b| b["musicInlineBadgeRenderer"]["icon"]["iconType"] == "MUSIC_EXPLICIT_BADGE")
+}
+
 fn list_item(r: &Value) -> Option<Track> {
     let cols = arr(&r["flexColumns"]);
     let col = |i: usize| cols.get(i).map(|c| &c["musicResponsiveListItemFlexColumnRenderer"]["text"]);
@@ -1363,14 +2032,15 @@ fn list_item(r: &Value) -> Option<Track> {
     for c in 1..cols.len() {
         for (i, run) in runs(col(c)?).enumerate() {
             let name = run["text"].as_str().unwrap_or_default();
-            let kind = page_type(run);
+            // Uploads link their artist and album to the account's own pages of them.
+            let (kind, id) = (upload_page(run).or_else(|| page_type(run)), browse_id(run));
             if c == 1 && in_artists {
                 match name.trim() {
                     "•" => in_artists = false,
                     "" | "," | "&" => {}
                     "Song" | "Video" | "Episode" if i == 0 => {}
                     n if kind.is_none_or(|k| k == "MUSIC_PAGE_TYPE_ARTIST" || k == "MUSIC_PAGE_TYPE_USER_CHANNEL") && !looks_like_duration(n) && !n.ends_with(" plays") => {
-                        artists.push(Link { name: n.to_owned(), id: browse_id(run) })
+                        artists.push(Link { name: n.to_owned(), id: id.clone() })
                     }
                     _ => {}
                 }
@@ -1380,9 +2050,9 @@ fn list_item(r: &Value) -> Option<Track> {
             }
             match kind {
                 Some("MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL") if !artists.iter().any(|a| a.name == name) => {
-                    artists.push(Link { name: name.to_owned(), id: browse_id(run) })
+                    artists.push(Link { name: name.to_owned(), id })
                 }
-                Some("MUSIC_PAGE_TYPE_ALBUM") => album = Some(Link { name: name.to_owned(), id: browse_id(run) }),
+                Some("MUSIC_PAGE_TYPE_ALBUM") => album = Some(Link { name: name.to_owned(), id }),
                 // Search rows put the length in the text ("Artist • Album • 3:22").
                 _ if duration.is_none() && looks_like_duration(name) => duration = parse_duration(name),
                 _ if name.ends_with(" plays") => plays = count(name),
@@ -1396,8 +2066,9 @@ fn list_item(r: &Value) -> Option<Track> {
         duration = Some(d);
     }
     let track_nr = text(&r["index"]).and_then(|n| n.parse().ok());
-    let music_video = music_video(&[&r["overlay"], &r["flexColumns"][0]]);
-    Some(Track { id, title, artists, album, duration, thumbs: thumbs(&r["thumbnail"]["musicThumbnailRenderer"]), track_nr, plays, music_video })
+    let parts = [&r["overlay"], &r["flexColumns"][0]];
+    let (music_video, video) = (music_video(&parts), has_video(&parts));
+    Some(Track { id, title, artists, album, duration, thumbs: thumbs(&r["thumbnail"]["musicThumbnailRenderer"]), track_nr, plays, music_video, video, explicit: explicit(&r["badges"]) })
 }
 
 /// A song in a radio / up-next panel.
@@ -1424,12 +2095,14 @@ fn panel_item(r: &Value) -> Option<Track> {
         track_nr: None,
         plays: None,
         music_video: music_video(&[&r["navigationEndpoint"]]),
+        video: has_video(&[&r["navigationEndpoint"]]),
+        explicit: explicit(&r["badges"]),
     })
 }
 
 fn artist_links(v: &Value) -> Vec<Link> {
     runs(v)
-        .filter(|run| matches!(page_type(run), Some("MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL")))
+        .filter(|run| matches!(upload_page(run).or_else(|| page_type(run)), Some("MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL")))
         .map(|run| Link { name: run["text"].as_str().unwrap_or_default().to_owned(), id: browse_id(run) })
         .collect()
 }
@@ -1499,9 +2172,218 @@ fn browse_id(run: &Value) -> Option<String> {
     run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str().map(str::to_owned)
 }
 
+/// The account's uploads pages: Library › Uploads and its tabs, and an uploaded artist's
+/// or album's own page.
+const UPLOADS: &str = "FEmusic_library_privately_owned_";
+
+/// Which of your uploads' pages a browse id opens: an uploaded artist's
+/// ("FEmusic_library_privately_owned_artist_detail…") or album's ("…_release_detail…"),
+/// as the page type their links should carry. They don't always (an artist's is often
+/// UNKNOWN).
+fn upload_kind(id: &str) -> Option<&'static str> {
+    let rest = id.strip_prefix(UPLOADS)?;
+    if rest.starts_with("artist_detail") {
+        Some("MUSIC_PAGE_TYPE_ARTIST")
+    } else if rest.starts_with("release_detail") {
+        Some("MUSIC_PAGE_TYPE_ALBUM")
+    } else {
+        None
+    }
+}
+
+/// An uploaded artist's or album's page, which only the account that uploaded it can see.
+pub fn uploaded(id: &str) -> bool {
+    upload_kind(id).is_some()
+}
+
+/// An uploaded song's artist or album run, read as the artist or album it names.
+fn upload_page(run: &Value) -> Option<&'static str> {
+    upload_kind(run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()?)
+}
+
+// ------------------------------------------------------------- the playing video's own lyrics
+//
+// The two YouTube sources, fetched from the playing video itself like ForkChord's
+// do (YouTubeLyrics.kt): its captions, timed; and the plain text of its Lyrics tab.
+
+/// Timed captions for the exact playing video. `get_transcript` is asked with the
+/// tiny protobuf that names the video (field 1, its length, the id), and its cue
+/// renderers answer with a start and a line each.
+pub async fn captions(api: &Api, video_id: &str) -> Vec<crate::lyrics::Lyrics> {
+    if video_id.len() != 11 || !video_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return vec![];
+    }
+    let mut protobuf = vec![0x0au8, video_id.len() as u8];
+    protobuf.extend_from_slice(video_id.as_bytes());
+    use base64::Engine;
+    let params = base64::engine::general_purpose::STANDARD.encode(&protobuf);
+    let Ok(v) = api.call("get_transcript", json!({ "params": params }), false).await else {
+        return vec![];
+    };
+    let mut cues: Vec<&Value> = Vec::new();
+    collect_objects(&v, "transcriptSegmentRenderer", &mut cues);
+    collect_objects(&v, "transcriptCueRenderer", &mut cues);
+    let mut lines: Vec<crate::lyrics::Line> = cues
+        .into_iter()
+        .filter_map(|cue| {
+            let start = number_in(&cue["startMs"]).or_else(|| number_in(&cue["startOffsetMs"]))?;
+            let text = inner_text(&cue["cue"]).or_else(|| inner_text(&cue["snippet"])).unwrap_or_default();
+            let text = text.trim_matches(|c: char| c.is_whitespace() || c == '♪' || c == '♫').trim().to_owned();
+            (start >= 0 && !text.is_empty()).then(|| crate::lyrics::Line { start: start as i32, text, ..Default::default() })
+        })
+        .collect();
+    lines.sort_by_key(|l| l.start);
+    crate::lyrics::Lyrics::new(crate::lyrics::Provider::YoutubeCaptions, lines, None, vec![]).into_iter().collect()
+}
+
+/// Plain lyrics from the Lyrics tab of the exact playing video: the watch page's
+/// Lyrics tab names its own browse (an `MPADb…` one), whose description shelf is
+/// the lyrics.
+pub async fn lyrics_tab(api: &Api, video_id: &str) -> Vec<crate::lyrics::Lyrics> {
+    let Ok(v) = api.call("next", json!({ "videoId": video_id }), false).await else {
+        return vec![];
+    };
+    let Some(browse_id) = lyrics_browse(&v) else { return vec![] };
+    let Ok(page) = api.call("browse", json!({ "browseId": browse_id }), false).await else {
+        return vec![];
+    };
+    let Some(shelf) = find_key(&page, "musicDescriptionShelfRenderer") else { return vec![] };
+    let text = text(&shelf["description"]).unwrap_or_default();
+    if text.trim().is_empty() {
+        return vec![];
+    }
+    let lines = crate::lyrics::parse_plain(&text).into_iter().filter(|l| !l.text.trim().is_empty()).collect();
+    crate::lyrics::Lyrics::new(crate::lyrics::Provider::YoutubePlain, lines, None, vec![]).into_iter().collect()
+}
+
+/// The Lyrics tab's browse: the tab titled so carries it; failing a named tab, any
+/// browse whose id starts `MPADb` (the lyrics panel's prefix, unique to it).
+fn lyrics_browse(v: &Value) -> Option<String> {
+    let tabs = &find_key(v, "watchNextTabbedResultsRenderer")?["tabs"];
+    for tab in arr(tabs) {
+        let t = &tab["tabRenderer"];
+        if t["title"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("lyrics")) {
+            if let Some(id) = t["endpoint"]["browseEndpoint"]["browseId"].as_str().filter(|s| !s.is_empty()) {
+                return Some(id.to_owned());
+            }
+        }
+    }
+    browse_starting_with(v, "MPADb")
+}
+
+/// The first `browseId` anywhere in `v` that starts with `prefix`.
+fn browse_starting_with(v: &Value, prefix: &str) -> Option<String> {
+    match v {
+        Value::Object(m) => {
+            for (key, x) in m {
+                if key == "browseId" && x.as_str().is_some_and(|s| s.starts_with(prefix)) {
+                    return x.as_str().map(str::to_owned);
+                }
+                if let Some(found) = browse_starting_with(x, prefix) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(a) => a.iter().find_map(|x| browse_starting_with(x, prefix)),
+        _ => None,
+    }
+}
+
+/// Every object anywhere in `v` stored under `key`, depth first (`objectsNamed`).
+fn collect_objects<'a>(v: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
+    match v {
+        Value::Array(a) => a.iter().for_each(|x| collect_objects(x, key, out)),
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k == key && x.is_object() {
+                    out.push(x);
+                }
+                collect_objects(x, key, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A number from a JSON string or number, however YouTube writes it.
+fn number_in(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// The text of a YouTube text node: a string, `simpleText`, `text`, or its runs.
+fn inner_text(v: &Value) -> Option<String> {
+    if v.is_null() {
+        return None;
+    }
+    if let Some(s) = v.as_str() {
+        return (!s.trim().is_empty()).then(|| s.to_owned());
+    }
+    for key in ["simpleText", "text"] {
+        if let Some(s) = v[key].as_str().filter(|s| !s.trim().is_empty()) {
+            return Some(s.to_owned());
+        }
+    }
+    if let Some(runs) = v["runs"].as_array() {
+        let joined: String = runs.iter().filter_map(|r| r["text"].as_str()).collect();
+        return (!joined.trim().is_empty()).then_some(joined);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_report_asks_with_the_signature_timestamp() {
+        let body = report_play_body("gIhejm0k3dU", Some(20767));
+        assert_eq!(body["videoId"], "gIhejm0k3dU");
+        assert_eq!(body["playbackContext"]["contentPlaybackContext"]["signatureTimestamp"], 20767);
+        // Without a prepared player it asks as before rather than not at all.
+        let body = report_play_body("gIhejm0k3dU", None);
+        assert!(body.get("playbackContext").is_none());
+        assert_eq!(body["contentCheckOk"], true);
+    }
+
+    #[test]
+    fn own_playlist_sorts_come_from_the_menu() {
+        let item = |title: &str, on: bool, action: Value| json!({"title": title, "selected": on, "serviceEndpoint": {"playlistEditEndpoint": {"playlistId": "PL1", "actions": [action]}}});
+        let shelf = json!({"header": {"musicSideAlignedItemRenderer": {"startItems": [{"sortFilterSubMenuRenderer": {"subMenuItems": [
+            item("Manual ordering", false, json!({"action": "ACTION_SET_PLAYLIST_VIDEO_ORDER", "playlistVideoOrder": 0})),
+            item("Newest first", true, json!({"action": "ACTION_SET_PLAYLIST_VIDEO_ORDER", "playlistVideoOrder": 1})),
+            item("Title", false, json!({"action": "ACTION_SET_PLAYLIST_DYNAMIC_SORT_PREFERENCE", "playlistDynamicSortPreference": 1})),
+        ]}}]}}});
+        let s = sorts(&shelf);
+        let got: Vec<(&str, bool, bool)> = s.iter().map(|s| (s.name.as_str(), s.on, s.manual)).collect();
+        assert_eq!(got, [("Manual ordering", false, true), ("Newest first", true, false), ("Title", false, false)]);
+        assert_eq!(s[1].actions[0]["playlistVideoOrder"], 1);
+        // Liked Music's menu has nothing to send: no Sort of YouTube Music's there.
+        let liked = json!({"header": {"musicSideAlignedItemRenderer": {"startItems": [{"sortFilterSubMenuRenderer": {"subMenuItems": [{"title": "Newest first", "selected": true}]}}]}}});
+        assert!(sorts(&liked).is_empty());
+    }
+
+    #[test]
+    fn moods_and_genres_are_read_with_their_categories() {
+        let button = |name: &str, params: &str| json!({"musicNavigationButtonRenderer": {"buttonText": {"runs": [{"text": name}]}, "solid": {"leftStripeColor": 4288988671u64},
+            "clickCommand": {"browseEndpoint": {"browseId": "FEmusic_moods_and_genres_category", "params": params}}}});
+        let grid = |title: &str, items: Vec<Value>| json!({"gridRenderer": {"header": {"gridHeaderRenderer": {"title": {"runs": [{"text": title}]}}}, "items": items}});
+        let v = json!({"contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [
+            grid("Moods & moments", vec![button("Chill", "p1"), button("Focus", "p2")]),
+            grid("Genres", vec![button("Rock", "p3")]),
+            grid("Empty", vec![]),
+        ]}}}}]}}});
+        let groups = super::parse_moods(&v);
+        assert_eq!(groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), ["Moods & moments", "Genres"]);
+        assert_eq!((groups[0].moods[1].title.as_str(), groups[0].moods[1].params.as_str(), groups[0].moods[1].color), ("Focus", "p2", 0xFFA4_C5FF));
+        let page = json!({"header": {"musicHeaderRenderer": {"title": {"runs": [{"text": "Chill"}]}}},
+            "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [
+                {"musicCarouselShelfRenderer": {"header": {"musicCarouselShelfBasicHeaderRenderer": {"title": {"runs": [{"text": "Coffee shop blends"}]}}},
+                    "contents": [{"musicTwoRowItemRenderer": {"title": {"runs": [{"text": "Mellow"}]}, "navigationEndpoint": {"browseEndpoint": {"browseId": "VLRDCLAK5uy_x", "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_PLAYLIST"}}}}}}]}}
+            ]}}}}]}}});
+        let m = super::parse_mood(&page, "p1");
+        assert_eq!((m.title.as_str(), m.shelves.len(), m.shelves[0].title.as_str()), ("Chill", 1, "Coffee shop blends"));
+    }
 
     /// An `accountItem` as the account switcher lists it.
     fn account_item(name: &str, handle: Option<&str>, selected: bool, page: Option<&str>, datasync: &str) -> Value {
@@ -1668,6 +2550,155 @@ mod tests {
         let t = list_item(&row(ALBUM_ROW)).unwrap();
         assert_eq!((t.title.as_str(), t.track_nr, t.duration), ("Alone Again", Some(1), Some(251)));
         assert!(t.artists.is_empty());
+    }
+
+    // Library › Uploads row, shaped like a real answer (November 2026): the artist and album lead
+    // to the account's uploads, the artist's page type UNKNOWN and the album's ALBUM.
+    const UPLOAD_ROW: &str = r#"{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"A Sky Full Of Stars","navigationEndpoint":{"watchEndpoint":{"videoId":"FDpg6FxVQZU"}}}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Coldplay","navigationEndpoint":{"browseEndpoint":{"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CICr2crg7OWpchIIY29sZHBsYXk","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}}}}}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Ghost Stories","navigationEndpoint":{"browseEndpoint":{"browseId":"FEmusic_library_privately_owned_release_detailb_po_CICr2crg7OWpchIOZ2hvc3Qgc3Rvcmllcw","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}}}}}]}}}],"fixedColumns":[{"musicResponsiveListItemFixedColumnRenderer":{"text":{"runs":[{"text":"4:28"}]}}}]}}"#;
+
+    #[test]
+    fn upload_row_links_its_artist_and_album_to_their_uploads_pages() {
+        const ARTIST: &str = "FEmusic_library_privately_owned_artist_detaila_po_CICr2crg7OWpchIIY29sZHBsYXk";
+        const ALBUM: &str = "FEmusic_library_privately_owned_release_detailb_po_CICr2crg7OWpchIOZ2hvc3Qgc3Rvcmllcw";
+        let t = list_item(&row(UPLOAD_ROW)).unwrap();
+        assert_eq!(names(&t), ["Coldplay"]);
+        assert_eq!(t.artists[0].id.as_deref(), Some(ARTIST));
+        assert_eq!(t.album.as_ref().map(|a| (a.name.as_str(), a.id.as_deref())), Some(("Ghost Stories", Some(ALBUM))));
+        assert_eq!(t.duration, Some(268));
+        // Whatever page type the run carries: none, or a plain artist's.
+        let bare = UPLOAD_ROW.replace(r#","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}}"#, "");
+        assert_eq!(list_item(&row(&bare)).unwrap().artists, t.artists);
+        let plain = UPLOAD_ROW.replace("MUSIC_PAGE_TYPE_UNKNOWN", "MUSIC_PAGE_TYPE_ARTIST");
+        assert_eq!(list_item(&row(&plain)).unwrap().artists, t.artists);
+        // Those pages open in the app; Library › Uploads' own tabs aren't one of them.
+        assert!(uploaded(ARTIST) && uploaded(ALBUM));
+        assert!(!uploaded("FEmusic_library_privately_owned_tracks") && !uploaded("MPREb_54uxDZG0XOp"));
+    }
+
+    // An uploaded album's page as ytmusicapi reads one (not checked against a live answer):
+    // the header albums had before 2024, then the songs in one column.
+    fn upload_album_page() -> Value {
+        let row: Value = serde_json::from_str(UPLOAD_ROW).unwrap();
+        // A row that names its song only in its menu, and one with no song (Shuffle all).
+        let menu_only = json!({"musicResponsiveListItemRenderer": {
+            "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Midnight City"}]}}}],
+            "menu": {"menuRenderer": {"items": [{"menuServiceItemRenderer": {"serviceEndpoint": {"queueAddEndpoint": {"queueTarget": {"videoId": "dX3k_QDnzHE"}}}}}]}},
+        }});
+        let shuffle = json!({"musicResponsiveListItemRenderer": {"flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Shuffle all"}]}}}]}});
+        json!({
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "Ghost Stories"}]},
+                "subtitle": {"runs": [{"text": "Album"}, {"text": " • "}, {"text": "Coldplay", "navigationEndpoint": {"browseEndpoint": {"browseId": "FEmusic_library_privately_owned_artist_detaila_po_CICr2crg7OWpchIIY29sZHBsYXk"}}}, {"text": " • "}, {"text": "2014"}]},
+                "thumbnail": {"croppedSquareThumbnailRenderer": {"thumbnail": {"thumbnails": [{"url": "https://lh3.googleusercontent.com/gs=w226-h226", "width": 226, "height": 226}]}}},
+            }},
+            "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [{"musicShelfRenderer": {
+                "contents": [shuffle, row, menu_only],
+                "continuations": [{"nextContinuationData": {"continuation": "more"}}],
+            }}]}}}}]}},
+        })
+    }
+
+    #[test]
+    fn uploaded_album_page_lists_its_songs() {
+        let id = "FEmusic_library_privately_owned_release_detailb_po_CICr2crg7OWpchIOZ2hvc3Qgc3Rvcmllcw";
+        let (a, token) = parse_upload_album(&upload_album_page(), id).unwrap();
+        assert_eq!((a.title.as_str(), a.subtitle.as_str(), a.is_album, a.save_id.as_deref()), ("Ghost Stories", "Album • Coldplay • 2014", true, None));
+        assert_eq!(a.artists[0].id.as_deref(), Some("FEmusic_library_privately_owned_artist_detaila_po_CICr2crg7OWpchIIY29sZHBsYXk"));
+        assert_eq!(a.thumbs.len(), 1);
+        assert_eq!(a.tracks.iter().map(|t| (t.id.as_str(), t.title.as_str())).collect::<Vec<_>>(), [("FDpg6FxVQZU", "A Sky Full Of Stars"), ("dX3k_QDnzHE", "Midnight City")]);
+        // What a row leaves out, the header says.
+        let last = &a.tracks[1];
+        assert_eq!((names(last), last.album.as_ref().and_then(|l| l.id.as_deref()), last.thumbs.len()), (vec!["Coldplay"], Some(id), 1));
+        assert_eq!(token.as_deref(), Some("more"));
+    }
+
+    #[test]
+    fn uploaded_album_page_reads_the_newer_header_too() {
+        let v = upload_album_page();
+        let shelf = v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0].clone();
+        let v = json!({"contents": {"twoColumnBrowseResultsRenderer": {
+            "tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [{"musicResponsiveHeaderRenderer": {
+                "title": {"runs": [{"text": "Ghost Stories"}]},
+                "subtitle": {"runs": [{"text": "Album"}, {"text": " • "}, {"text": "2014"}]},
+                "straplineTextOne": {"runs": [{"text": "Coldplay"}]},
+            }}]}}}}],
+            "secondaryContents": {"sectionListRenderer": {"contents": [shelf]}},
+        }}});
+        let (a, _) = parse_upload_album(&v, "FEmusic_library_privately_owned_release_detailb").unwrap();
+        assert_eq!((a.subtitle.as_str(), a.tracks.len()), ("Album • Coldplay • 2014", 2));
+    }
+
+    #[test]
+    fn uploaded_artist_page_lists_all_your_songs_by_them() {
+        let id = "FEmusic_library_privately_owned_artist_detaila_po_CICr2crg7OWpchIIY29sZHBsYXk";
+        let mut v = upload_album_page();
+        v["header"] = Value::Null;
+        let (page, token) = parse_upload_artist(&v, id).unwrap();
+        // No header: the name its songs give it.
+        assert_eq!((page.id.as_str(), page.name.as_str(), page.top.len(), page.channel_id.as_deref()), (id, "Coldplay", 2, None));
+        assert_eq!(token.as_deref(), Some("more"));
+        v["header"] = json!({"musicHeaderRenderer": {"title": {"runs": [{"text": "Coldplay (uploads)"}]}}});
+        assert_eq!(parse_upload_artist(&v, id).unwrap().0.name, "Coldplay (uploads)");
+        assert!(parse_upload_artist(&json!({}), id).is_none());
+    }
+
+    // A search of your uploads and one of your library, trimmed from real answers (November
+    // 2026). Only the picked tab holds results. Uploads come in one untitled shelf: your
+    // uploads' artist and album (leading to pages of your own), then the songs.
+    const UPLOADS_SEARCH: &str = r#"{"contents":{"tabbedSearchResultsRenderer":{"tabs":[{"tabRenderer":{"title":"YT Music","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYAQ%3D%3D","query":"kaede"}}}},{"tabRenderer":{"title":"Library","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYBA%3D%3D","query":"kaede"}}}},{"tabRenderer":{"title":"Uploads","selected":true,"content":{"sectionListRenderer":{"contents":[{"musicShelfRenderer":{"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Kaede"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST"}},"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"}}}},{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Stardust in Blue"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Album"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}},"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"}},"text":"Kaede"}]}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"FEmusic_library_privately_owned_release_detailb_po_CJD2uP34k9CPgQESEHN0YXJkdXN0IGluIGJsdWUaBWthZWRlIg1odHRwIHVwbG9hZGVy"}}}},{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"watchEndpoint":{"videoId":"pQlgsq6hpWE","watchEndpointMusicSupportedConfigs":{"watchEndpointMusicConfig":{"musicVideoType":"MUSIC_VIDEO_TYPE_PRIVATELY_OWNED_TRACK"}}}},"text":"さよならはハート仕掛け - Farewell Is A Heartwork"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}},"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"}},"text":"Kaede"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"FEmusic_library_privately_owned_release_detailb_po_CJD2uP34k9CPgQESEHN0YXJkdXN0IGluIGJsdWUaBWthZWRlIg1odHRwIHVwbG9hZGVy"}},"text":"Stardust in Blue"}]}}}],"playlistItemData":{"videoId":"pQlgsq6hpWE"}}}]}}]}}}}]}}}"#;
+    // Library results come in titled shelves; its artists lead to "MPLA" and their channel.
+    const LIBRARY_SEARCH: &str = r#"{"contents":{"tabbedSearchResultsRenderer":{"tabs":[{"tabRenderer":{"title":"YT Music","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYAQ%3D%3D","query":"kaede"}}}},{"tabRenderer":{"title":"Library","selected":true,"content":{"sectionListRenderer":{"contents":[{"musicShelfRenderer":{"title":{"runs":[{"text":"Artists"}]},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Kaede"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"3.8K subscribers"}]}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_LIBRARY_ARTIST"}},"browseId":"MPLAUCMJIUyOLyBdal5XpZW3-96w"}}}}]}},{"musicShelfRenderer":{"title":{"runs":[{"text":"Albums"}]},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Stardust in Blue"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Album"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST"}},"browseId":"UCMJIUyOLyBdal5XpZW3-96w"}},"text":"Kaede"},{"text":" & "},{"text":"Lamp"},{"text":" • "},{"text":"2020"}]}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"MPREb_54uxDZG0XOp"}}}}]}},{"musicShelfRenderer":{"title":{"runs":[{"text":"Songs"}]},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"watchEndpoint":{"videoId":"G0BLtNsvMP8","watchEndpointMusicSupportedConfigs":{"watchEndpointMusicConfig":{"musicVideoType":"MUSIC_VIDEO_TYPE_ATV"}}}},"text":"When We Were Young"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST"}},"browseId":"UCMJIUyOLyBdal5XpZW3-96w"}},"text":"Kaede"},{"text":" & "},{"text":"Lamp"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"MPREb_54uxDZG0XOp"}},"text":"Stardust in Blue"}]}}}],"playlistItemData":{"videoId":"G0BLtNsvMP8"}}}]}}]}}}},{"tabRenderer":{"title":"Uploads","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYAw%3D%3D","query":"kaede"}}}}]}}}"#;
+
+    #[test]
+    fn uploads_search_finds_your_songs_albums_and_artists() {
+        let r = parse_scoped(&serde_json::from_str(UPLOADS_SEARCH).unwrap());
+        let cards: Vec<_> = r.cards.iter().map(|c| (c.title.as_str(), c.subtitle.as_str(), &c.target, c.round)).collect();
+        assert_eq!(
+            cards,
+            [
+                ("Kaede", "Artist", &Target::Artist("FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl".into()), true),
+                (
+                    "Stardust in Blue",
+                    "Album • Kaede",
+                    &Target::Album("FEmusic_library_privately_owned_release_detailb_po_CJD2uP34k9CPgQESEHN0YXJkdXN0IGluIGJsdWUaBWthZWRlIg1odHRwIHVwbG9hZGVy".into()),
+                    false
+                ),
+            ]
+        );
+        // The album's artist leads to their uploads page, whatever its page type.
+        assert_eq!(r.cards[1].links, [Link { name: "Kaede".into(), id: Some("FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl".into()) }]);
+        // Library › Uploads' own tabs aren't pages to open.
+        assert_eq!(target(&json!({"browseEndpoint": {"browseId": "FEmusic_library_privately_owned_releases"}})), None);
+        assert_eq!(r.tracks.len(), 1);
+        let t = &r.tracks[0];
+        assert_eq!((t.id.as_str(), t.title.as_str()), ("pQlgsq6hpWE", "さよならはハート仕掛け - Farewell Is A Heartwork"));
+        assert_eq!(names(t), ["Kaede"]);
+        assert_eq!(t.artists[0].id.as_deref(), Some("FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"));
+        let album = "FEmusic_library_privately_owned_release_detailb_po_CJD2uP34k9CPgQESEHN0YXJkdXN0IGluIGJsdWUaBWthZWRlIg1odHRwIHVwbG9hZGVy";
+        assert_eq!(t.album.as_ref().map(|a| (a.name.as_str(), a.id.as_deref())), Some(("Stardust in Blue", Some(album))));
+        assert!(!t.video);
+    }
+
+    #[test]
+    fn library_search_opens_its_artists_and_albums() {
+        let r = parse_scoped(&serde_json::from_str(LIBRARY_SEARCH).unwrap());
+        let cards: Vec<_> = r.cards.iter().map(|c| (c.title.as_str(), c.subtitle.as_str(), &c.target)).collect();
+        assert_eq!(
+            cards,
+            [
+                ("Kaede", "3.8K subscribers", &Target::Artist("UCMJIUyOLyBdal5XpZW3-96w".into())),
+                ("Stardust in Blue", "Album • Kaede & Lamp • 2020", &Target::Album("MPREb_54uxDZG0XOp".into())),
+            ]
+        );
+        assert_eq!(r.tracks.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["When We Were Young"]);
+        assert_eq!(r.tracks[0].album.as_ref().and_then(|a| a.id.as_deref()), Some("MPREb_54uxDZG0XOp"));
+    }
+
+    #[test]
+    fn a_search_without_a_picked_tab_finds_nothing() {
+        let v = json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {"title": "Library"}}]}}});
+        let r = parse_scoped(&v);
+        assert!(r.tracks.is_empty() && r.cards.is_empty());
     }
 
     #[test]
@@ -1864,6 +2895,78 @@ mod tests {
     }
 
     #[test]
+    fn subscribed_artist_pages() {
+        let artist: Value = serde_json::from_str(ARTIST_ROW).unwrap();
+        let old = json!({"continuationContents": {"musicShelfContinuation": {"contents": [artist], "continuations": [{"nextContinuationData": {"continuation": "P2"}}]}}});
+        let (cards, next) = shelf_continuation(&old);
+        assert!(matches!(&cards[..], [Card { target: Target::Artist(id), .. }] if id == "UClYV6hHlupm_S_ObS1W-DYw"));
+        assert_eq!(next.as_deref(), Some("P2"));
+
+        let new = json!({"onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+            artist,
+            {"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": "P3"}}}}
+        ]}}]});
+        let (cards, next) = shelf_continuation(&new);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(next.as_deref(), Some("P3"));
+
+        assert_eq!(shelf_continuation(&json!({})), (Vec::new(), None));
+    }
+
+    #[test]
+    fn artist_subscription() {
+        let page = |button: Value| json!({"header": {"musicImmersiveHeaderRenderer": {"title": {"runs": [{"text": "Alex G"}]}, "subscriptionButton": button}}});
+        let followed = parse_artist(&page(json!({"subscribeButtonRenderer": {"subscribed": true, "channelId": "UCx"}})), "UCa").unwrap();
+        assert!(followed.subscribed);
+        assert_eq!(followed.channel_id.as_deref(), Some("UCx"));
+        // No button (signed out, or not a channel one can subscribe to): no pill.
+        let none = parse_artist(&page(Value::Null), "UCa").unwrap();
+        assert!(!none.subscribed);
+        assert_eq!(none.channel_id, None);
+
+        // Asked signed in, answered signed out: whether it's followed isn't known.
+        let signed_out = json!({"responseContext": {"serviceTrackingParams": [{"params": [{"key": "logged_in", "value": "0"}]}]}});
+        assert!(answered_signed_out(false, &signed_out));
+        assert!(answered_signed_out(true, &json!({})));
+        assert!(!answered_signed_out(false, &json!({})));
+        let mut p = followed;
+        unknown_subscription(&mut p);
+        assert!(!p.subscribed);
+        assert_eq!(p.channel_id, None);
+    }
+
+    #[test]
+    fn artist_songs_from_your_library() {
+        let song = |id: &str, title: &str| json!({"musicTwoRowItemRenderer": {
+            "title": {"runs": [{"text": title}]},
+            "subtitle": {"runs": [{"text": "Song"}, {"text": " • "}, {"text": "Ashe", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCa",
+                "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_ARTIST"}}}}}]},
+            "navigationEndpoint": {"watchEndpoint": {"videoId": id, "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig": {"musicVideoType": "MUSIC_VIDEO_TYPE_ATV"}}}}
+        }});
+        let shelf = |title: Value, items: Vec<Value>| json!({"musicCarouselShelfRenderer": {"header": {"musicCarouselShelfBasicHeaderRenderer": {"title": title}}, "contents": items}});
+        // Its title leads to the account's library page for the artist, in any language.
+        let library = json!({"runs": [{"text": "Aus deiner Mediathek", "navigationEndpoint": {"browseEndpoint": {"browseId": "MPLAUCa", "params": "ggMCCAI%3D"}}}]});
+        let v = json!({
+            "header": {"musicImmersiveHeaderRenderer": {"title": {"runs": [{"text": "Ashe"}]}}},
+            "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [
+                shelf(json!({"runs": [{"text": "Videos"}]}), vec![song("vvvvvvvvvvv", "A video")]),
+                shelf(library, vec![song("aaaaaaaaaaa", "Moral of the Story"), song("bbbbbbbbbbb", "Till Forever Falls Apart")]),
+            ]}}}}]}}
+        });
+        let page = parse_artist(&v, "UCa").unwrap();
+        let ids: Vec<&str> = page.library.iter().filter_map(|c| if let Target::Song(t) = &c.target { Some(t.id.as_str()) } else { None }).collect();
+        assert_eq!(ids, ["aaaaaaaaaaa", "bbbbbbbbbbb"]);
+        assert_eq!(page.library[0].title, "Moral of the Story");
+        assert_eq!(page.library[0].links.first().and_then(|l| l.id.as_deref()), Some("UCa"));
+        // Other song shelves (Videos) stay out of it.
+        assert!(page.albums.is_empty() && page.playlists.is_empty() && page.similar.is_empty());
+        // Signed out there's no such shelf.
+        let mut out = v.clone();
+        out["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"].as_array_mut().unwrap().pop();
+        assert!(parse_artist(&out, "UCa").unwrap().library.is_empty());
+    }
+
+    #[test]
     fn counts_and_lengths() {
         assert_eq!(count("3.6B plays"), Some(3_600_000_000));
         assert_eq!(count("40.1M"), Some(40_100_000));
@@ -1913,17 +3016,31 @@ mod tests {
             id: title.into(),
             title: title.into(),
             artists: artists.iter().map(|a| Link { name: a.to_string(), id: None }).collect(),
-            album: None,
             duration: Some(secs),
-            thumbs: vec![],
-            track_nr: None,
-            plays: None,
-            music_video: false,
+            ..Default::default()
         }
     }
 
     fn video(title: &str, artists: &[&str], secs: u32) -> Track {
         Track { music_video: true, ..song(title, artists, secs) }
+    }
+
+    #[test]
+    fn the_music_video_of_a_song_is_found_by_a_sure_match_only() {
+        let song_of = song("Take On Me", &["a-ha"], 226);
+        let official = video("a-ha - Take On Me (Official Video) [4K]", &["a-ha"], 244);
+        let not_official = Track { music_video: false, video: true, ..official.clone() };
+        assert_eq!(sure_video(&song_of, vec![not_official.clone(), official.clone()]).map(|v| v.id), Some(official.id.clone()));
+        // A fan's upload of the same song isn't its music video.
+        assert_eq!(sure_video(&song_of, vec![not_official]), None);
+        // Nor is a live video, another song's, or one past the first few hits.
+        assert_eq!(sure_video(&song_of, vec![video("Take On Me (Live From MTV Unplugged)", &["a-ha"], 240)]), None);
+        assert_eq!(sure_video(&song_of, vec![video("The Sun Always Shines on T.V.", &["a-ha"], 300)]), None);
+        let others = (0..5).map(|i| video(&format!("Other {i}"), &["a-ha"], 244));
+        assert_eq!(sure_video(&song_of, others.chain([official]).collect()), None);
+        // Everyone on the video is on the song too.
+        assert_eq!(sure_video(&song("Duet", &["Singer A"], 200), vec![video("Duet", &["Singer A", "Singer B"], 200)]), None);
+        assert!(sure_video(&song("Duet", &["Singer A", "Singer B"], 200), vec![video("Duet", &["Singer A"], 200)]).is_some());
     }
 
     #[test]
@@ -2021,12 +3138,27 @@ mod tests {
 
     #[test]
     fn a_radio_is_its_songs_or_its_videos_when_it_has_only_those() {
-        let t = |id: &str| Track { id: id.into(), title: id.into(), artists: Vec::new(), album: None, duration: None, thumbs: Vec::new(), track_nr: None, plays: None, music_video: false };
+        let t = |id: &str| Track { id: id.into(), title: id.into(), artists: Vec::new(), album: None, duration: None, thumbs: Vec::new(), track_nr: None, plays: None, ..Default::default() };
         let ids = |items: &[(Track, bool)]| radio_tracks(items).map(|t| t.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&[(t("a"), false), (t("v"), true), (t("b"), false)]), ["a", "b"]);
         // A music video's radio: music videos only, kept rather than nothing.
         assert_eq!(ids(&[(t("v1"), true), (t("v2"), true)]), ["v1", "v2"]);
         assert!(ids(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_watch_page_panel_parses_the_up_next_mix() {
+        // the plain watch page's first tab — no playlistId asked of it — is the same
+        // panel a radio reads, which `up_next` draws its mix from
+        let item: Value = serde_json::from_str(PANEL_ITEM).unwrap();
+        let panel = json!({"contents": [
+            {"playlistPanelVideoRenderer": item["playlistPanelVideoRenderer"].clone()},
+            {"playlistPanelVideoWrapperRenderer": {"primaryRenderer": {"playlistPanelVideoRenderer": item["playlistPanelVideoRenderer"].clone()}}},
+        ]});
+        let (tracks, token) = panel_page(&panel);
+        assert_eq!(tracks.len(), 2, "a wrapped row counts the same as a bare one");
+        assert!(tracks.iter().all(|(t, _)| t.id == "aBhrEv5Z7uc"));
+        assert!(token.is_none(), "no continuation, no token");
     }
 
     #[test]
@@ -2036,6 +3168,9 @@ mod tests {
         assert!(!row("MUSIC_VIDEO_TYPE_ATV"));
         // User uploads and covers have no song version to look for.
         assert!(!row("MUSIC_VIDEO_TYPE_UGC"));
+        // They're still videos to show.
+        let video = |kind: &str| list_item(&album_row("x", "Song", kind)["musicResponsiveListItemRenderer"]).unwrap().video;
+        assert!(video("MUSIC_VIDEO_TYPE_OMV") && video("MUSIC_VIDEO_TYPE_UGC") && !video("MUSIC_VIDEO_TYPE_ATV"));
     }
 
     /// A signed-out search for the songs of a few music videos. Run alone:
@@ -2050,7 +3185,7 @@ mod tests {
             video("Kisi Nazar Ko Tera Intezar", &["Asha Bhosle"], 452),
             video("Bad Guy", &["Billie Eilish"], 207),
         ] {
-            let found = searched_song(&api, &v).await.unwrap();
+            let found = searched_song(&api, &v, false).await.unwrap();
             println!("{} -> {:?}", v.title, found.as_ref().map(|s| (&s.id, &s.title, s.artist_line(), s.duration)));
         }
     }

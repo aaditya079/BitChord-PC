@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use tao::event::{Event, WindowEvent};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::WindowBuilder;
@@ -23,6 +23,9 @@ pub enum Site {
     Google,
     /// open.spotify.com, for the Spotify transfer.
     Spotify,
+    /// discord.com, for Rich Presence through the linked account (fresh-iframe
+    /// token capture, like ForkChord's agent shim).
+    Discord,
 }
 
 impl Site {
@@ -30,6 +33,7 @@ impl Site {
         match self {
             Site::Google => FLAG,
             Site::Spotify => SPOTIFY_FLAG,
+            Site::Discord => DISCORD_FLAG,
         }
     }
 
@@ -37,6 +41,7 @@ impl Site {
         match self {
             Site::Google => "Sign in to YouTube Music",
             Site::Spotify => "Sign in to Spotify",
+            Site::Discord => "Connect Discord",
         }
     }
 
@@ -44,6 +49,7 @@ impl Site {
         match self {
             Site::Google => "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F",
             Site::Spotify => "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F",
+            Site::Discord => "https://discord.com/login",
         }
     }
 
@@ -52,6 +58,7 @@ impl Site {
         match self {
             Site::Google => "https://music.youtube.com/",
             Site::Spotify => "https://open.spotify.com/",
+            Site::Discord => "https://discord.com/",
         }
     }
 
@@ -60,6 +67,7 @@ impl Site {
         match self {
             Site::Google => "SAPISID",
             Site::Spotify => "sp_dc",
+            Site::Discord => "",
         }
     }
 }
@@ -67,6 +75,8 @@ impl Site {
 pub enum Outcome {
     /// Google: the `Cookie` header value for youtube.com. Spotify: the `sp_dc` cookie's value.
     Cookie(String),
+    /// Discord: the account token read out of the page (fresh-iframe trick).
+    Token(String),
     Cancelled,
     Failed(String),
 }
@@ -78,6 +88,7 @@ const SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWe
 /// Command-line flags that make the binary run only a sign-in window.
 pub const FLAG: &str = "--login";
 pub const SPOTIFY_FLAG: &str = "--login-spotify";
+pub const DISCORD_FLAG: &str = "--login-discord";
 
 /// Show the sign-in window in a child process; `done` is called exactly once.
 pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send + 'static) {
@@ -87,6 +98,14 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
             let res = std::env::current_exe().and_then(|exe| {
                 let mut cmd = std::process::Command::new(exe);
                 crate::proxy::pass_to(&mut cmd);
+                webkit_env(&mut cmd);
+                // WebKitGTK renders a blank page (or none) on some Linux drivers, NVIDIA
+                // and Wayland most of all, unless its accelerated path is switched off.
+                // The sign-in page needs no speed, so the safe path is always the one.
+                #[cfg(target_os = "linux")]
+                {
+                    cmd.env("WEBKIT_DISABLE_DMABUF_RENDERER", "1").env("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+                }
                 cmd.arg(site.flag())
                     .arg(&profile_dir)
                     .stdin(std::process::Stdio::null())
@@ -100,6 +119,8 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
                     let line = text.lines().last().unwrap_or_default();
                     if let Some(c) = line.strip_prefix("cookie ") {
                         Outcome::Cookie(c.to_owned())
+                    } else if let Some(t) = line.strip_prefix("discord ") {
+                        Outcome::Token(t.to_owned())
                     } else if let Some(e) = line.strip_prefix("failed ") {
                         Outcome::Failed(e.to_owned())
                     } else if line == "cancelled" {
@@ -113,10 +134,21 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
         .expect("spawn login thread");
 }
 
+/// For a webview window's process. WebKitGTK's DMA-BUF renderer draws nothing at all
+/// with NVIDIA's own driver on many cards, so the window stays blank: there it draws
+/// the older way. `WEBKIT_DISABLE_DMABUF_RENDERER=0` keeps it.
+pub fn webkit_env(cmd: &mut std::process::Command) {
+    const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if cfg!(target_os = "linux") && std::env::var_os(VAR).is_none() && std::path::Path::new("/proc/driver/nvidia/version").exists() {
+        cmd.env(VAR, "1");
+    }
+}
+
 /// Entry point of the child process: run the window and report on stdout.
 pub fn child_main(site: Site, profile_dir: PathBuf) {
     match run(site, profile_dir) {
         Ok(Outcome::Cookie(c)) => println!("cookie {c}"),
+        Ok(Outcome::Token(t)) => println!("discord {t}"),
         Ok(Outcome::Cancelled) => println!("cancelled"),
         Ok(Outcome::Failed(e)) => println!("failed {e}"),
         Err(e) => println!("failed {e:#}"),
@@ -202,6 +234,9 @@ fn store_id(profile_dir: &std::path::Path) -> [u8; 16] {
 }
 
 fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
+    if matches!(site, Site::Discord) {
+        return run_discord(site, profile_dir);
+    }
     let mut event_loop = EventLoopBuilder::<()>::with_user_event().build();
 
     let window = WindowBuilder::new()
@@ -236,6 +271,12 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
         .build_in(&window)?;
 
     let mut outcome = Outcome::Cancelled;
+    // The session cookie isn't always in the store the moment the page lands there:
+    // WKWebView hands its cookies over asynchronously, so Spotify's `sp_dc` (set well
+    // after the page's own cookies) could miss the first check and the window would
+    // sit there looking broken. After landing, the store is asked again for a few
+    // seconds before the flow is left alone.
+    let mut rechecking: Option<u32> = None;
     event_loop.run_return(|event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
@@ -247,8 +288,14 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                         outcome = Outcome::Cookie(match site {
                             Site::Spotify => c.value().to_owned(),
                             Site::Google => cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "),
+                            // Never reached: the Discord window has no session cookie and
+                            // `run` branches off to `run_discord` before this path.
+                            Site::Discord => String::new(),
                         });
                         *flow = ControlFlow::Exit;
+                    } else {
+                        rechecking = Some(0);
+                        *flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_millis(300));
                     }
                 }
                 Err(e) => {
@@ -256,6 +303,98 @@ fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
                     *flow = ControlFlow::Exit;
                 }
             },
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                // The store's turn again: the session cookie, or one more wait.
+                if let Some(n) = rechecking {
+                    match cookies_for(&webview, site.home()) {
+                        Ok(cookies) => {
+                            if let Some(c) = cookies.iter().find(|c| c.name() == site.session_cookie()) {
+                                outcome = Outcome::Cookie(match site {
+                                    Site::Spotify => c.value().to_owned(),
+                                    Site::Google => cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "),
+                                    // Never reached: the Discord window has no session cookie and
+                                    // `run` branches off to `run_discord` before this path.
+                                    Site::Discord => String::new(),
+                                });
+                                *flow = ControlFlow::Exit;
+                            } else if n < 30 {
+                                rechecking = Some(n + 1);
+                                *flow = ControlFlow::WaitUntil(std::time::Instant::now() + std::time::Duration::from_millis(300));
+                            } else {
+                                // Still signed out, whatever the page says: the user can
+                                // keep trying in the window, or close it.
+                                rechecking = None;
+                            }
+                        }
+                        Err(e) => {
+                            outcome = Outcome::Failed(format!("could not read cookies: {e}"));
+                            *flow = ControlFlow::Exit;
+                        }
+                    }
+                }
+            }
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,
+            _ => {}
+        }
+    });
+    drop(webview);
+    Ok(outcome)
+}
+
+/// The token grab, run in the page: Discord takes `localStorage` away from its own
+/// window, so a fresh same-origin iframe reads it every two seconds until it's there
+/// and posts it to the IPC handler (DiscordLoginScreen's TOKEN_SNIPPET, and the same
+/// trick ForkChord's agent shim plays).
+const DISCORD_TOKEN_SCRIPT: &str = concat!(
+    "(function(){var grab=function(){try{var f=document.createElement('iframe');",
+    "f.style.display='none';(document.body||document.documentElement).appendChild(f);",
+    "var t=f.contentWindow.localStorage.getItem('token');f.remove();",
+    "if(t&&t.length>20){window.ipc.postMessage(t);}}catch(e){}};",
+    "grab();window.addEventListener('load',grab);setInterval(grab,2000);})();"
+);
+
+/// The Discord window: there's no cookie to catch — the account token hides behind a
+/// fresh same-origin iframe once the app has booted (Discord takes `localStorage`
+/// away from its own window), so the page itself reads it back every two seconds and
+/// posts it through the webview's IPC channel, as ForkChord's agent shim does.
+fn run_discord(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
+    let mut event_loop = EventLoopBuilder::<String>::with_user_event().build();
+    let window = WindowBuilder::new()
+        .with_title(site.title())
+        .with_inner_size(tao::dpi::LogicalSize::new(480.0, 720.0))
+        .build(&event_loop)?;
+    let proxy = event_loop.create_proxy();
+    #[cfg(target_os = "macos")]
+    let store = store_id(&profile_dir);
+    let mut context = WebContext::new(Some(profile_dir));
+    let builder = WebViewBuilder::new_with_web_context(&mut context);
+    #[cfg(target_os = "macos")]
+    let builder = {
+        use wry::WebViewBuilderExtDarwin;
+        builder.with_data_store_identifier(store)
+    };
+    let webview = crate::proxy::webview(builder, false)
+        .with_ipc_handler(move |req| {
+            // The script's answer: the token, still wrapped in its JSON quotes.
+            let token = req.body().trim().trim_matches('"');
+            // A real token is long; short answers are the page not signed in yet,
+            // or noise from something else posting on the channel.
+            if token.len() > 20 && token.bytes().all(|b| b.is_ascii_graphic()) {
+                let _ = proxy.send_event(token.to_owned());
+            }
+        })
+        .with_initialization_script(DISCORD_TOKEN_SCRIPT)
+        .with_url(site.start())
+        .build_in(&window)?;
+
+    let mut outcome = Outcome::Cancelled;
+    event_loop.run_return(|event, _, flow| {
+        *flow = ControlFlow::Wait;
+        match event {
+            Event::UserEvent(token) => {
+                outcome = Outcome::Token(token);
+                *flow = ControlFlow::Exit;
+            }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,
             _ => {}
         }

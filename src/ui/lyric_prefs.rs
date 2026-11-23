@@ -19,10 +19,19 @@ pub struct Prefs {
     pub pins: HashMap<String, Provider>,
     /// Lyrics text size, as a multiple of the theme's own size.
     pub text_scale: f32,
+    /// Intensive glow: the sung words' drop-shadow lit far harder than the look asks
+    /// (am-lyrics'), with the listener's own strength on top. Set in Appearance, where
+    /// the visual presets can reach it.
+    pub glow_boost: bool,
+    /// How hard, 0..1, when [`Self::glow_boost`] is on.
+    pub glow_strength: f32,
 }
 
 /// The range and step of the lyrics text size setting.
 pub const TEXT_SCALE: (f32, f32, f32) = (0.6, 1.8, 0.1);
+
+/// The range and step of the intensive glow's strength setting.
+pub const GLOW_STRENGTH: (f32, f32, f32) = (0.1, 1.0, 0.1);
 
 /// Languages offered for translation.
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -82,7 +91,13 @@ impl Prefs {
             global_offset: num("lyric_offset"),
             word_trim: num("lyric_trim_word"),
             line_trim: num("lyric_trim_line"),
-            text_scale: get("lyric_scale").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(TEXT_SCALE.0, TEXT_SCALE.1),
+            // 70% out of the box: the theme's own size reads large on most screens, and
+            // the + button is right there for anyone who wants it bigger.
+            text_scale: get("lyric_scale").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.7).clamp(TEXT_SCALE.0, TEXT_SCALE.1),
+            // Intensive glow is off out of the box: the theme's own glow stands on its
+            // own, and one switch turns the am-lyrics look on.
+            glow_boost: get("lyric_glow").map(|v| v == "1").unwrap_or(false),
+            glow_strength: get("lyric_glow_strength").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.7).clamp(GLOW_STRENGTH.0, GLOW_STRENGTH.1),
             song_offsets: get("lyric_song_offsets").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             pins: get("lyric_pins")
                 .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
@@ -99,6 +114,8 @@ impl Prefs {
         storage.set_string("lyric_trim_word", format!("{:.1}", self.word_trim));
         storage.set_string("lyric_trim_line", format!("{:.1}", self.line_trim));
         storage.set_string("lyric_scale", format!("{:.2}", self.text_scale));
+        storage.set_string("lyric_glow", if self.glow_boost { "1" } else { "0" }.to_owned());
+        storage.set_string("lyric_glow_strength", format!("{:.2}", self.glow_strength));
         storage.set_string("lyric_song_offsets", serde_json::to_string(&self.song_offsets).unwrap_or_default());
         let pins: HashMap<&String, &str> = self.pins.iter().map(|(k, p)| (k, p.key())).collect();
         storage.set_string("lyric_pins", serde_json::to_string(&pins).unwrap_or_default());
@@ -172,12 +189,13 @@ pub struct Clock {
 }
 
 impl Clock {
-    pub fn tick(&mut self, pos: f64, playing: bool, now: f64) -> f64 {
+    /// `speed`: how much song goes by each second.
+    pub fn tick(&mut self, pos: f64, playing: bool, now: f64, speed: f64) -> f64 {
         if !playing || !self.playing || self.wall == 0.0 {
             self.shown = pos;
         } else {
             let dt = (now - self.wall).max(0.0);
-            let predicted = self.shown + dt;
+            let predicted = self.shown + dt * speed;
             let err = pos - predicted;
             if err.abs() > 0.25 {
                 self.shown = pos;
@@ -262,11 +280,24 @@ mod tests {
     #[test]
     fn clock_never_steps_back_while_playing() {
         let mut c = Clock::default();
-        let a = c.tick(10.0, true, 100.0);
-        let b = c.tick(10.0, true, 100.016);
-        let d = c.tick(9.99, true, 100.032);
+        let a = c.tick(10.0, true, 100.0, 1.0);
+        let b = c.tick(10.0, true, 100.016, 1.0);
+        let d = c.tick(9.99, true, 100.032, 1.0);
         assert!(b >= a && d >= b);
         // A seek snaps.
-        assert_eq!(c.tick(50.0, true, 100.05), 50.0);
+        assert_eq!(c.tick(50.0, true, 100.05, 1.0), 50.0);
+    }
+
+    #[test]
+    fn clock_keeps_up_when_sped_up() {
+        let mut c = Clock::default();
+        let dt = 1.0 / 60.0;
+        let mut shown = 0.0;
+        for i in 0..600 {
+            let t = i as f64 * dt;
+            shown = c.tick(10.0 + t * 2.0, true, 100.0 + t, 2.0);
+        }
+        let pos = 10.0 + 599.0 * dt * 2.0;
+        assert!((pos - shown).abs() < 0.005, "{}", pos - shown);
     }
 }

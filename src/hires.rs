@@ -4,6 +4,13 @@
 //! `{base}/search?q=…&quality=LOSSLESS` and `{base}/stream/{trackId}?quality=LOSSLESS`.
 //! A track found there plays from the addon's own URL instead of YouTube Music; when
 //! the addon has no copy, or the answer isn't playable, playback falls back to YouTube.
+//! This is the same protocol the BitChord Android app's module sources speak, so a
+//! link shared for the phone works here too — except for addons that turn on
+//! `"bitchordAuth": true`: those verify every request against a hardware-backed key
+//! only the official Android app can hold, and this client detects that and says so
+//! instead of failing mysteriously. A base URL may carry a query of its own — install
+//! links like `…/quality/manifest.json?sources=tidal` normalize to one — and every
+//! endpoint is built so the path lands before that query, not after it.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -15,10 +22,11 @@ use serde_json::Value;
 use crate::stream::Format;
 
 /// What the addon server is asked to recognise us as. Addons allow-list the desktop
-/// release line's agent (`BitChord/v1.x.y`) and answer `403` to anything else, so this
-/// build's own name goes first and the release line's is what a refusal falls back to.
-pub const USER_AGENT: &str = "Bitchord-PC";
-const RELEASE_AGENT: &str = "BitChord/v1.9.34";
+/// release line's agent (`BitChord/v1.x`) and answer `403 UA_BLOCKED` to anything else,
+/// so this build's own name goes first and the release line's is what a refusal falls
+/// back to.
+pub const USER_AGENT: &str = "Bitchord-Desktop-Revived";
+const RELEASE_AGENT: &str = "BitChord/v1.9";
 /// Set once an addon has refused our own name: it keeps the release line's agent for the
 /// rest of the session instead of being refused on every request.
 static RELEASE_LINE: AtomicBool = AtomicBool::new(false);
@@ -39,7 +47,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 /// seconds on a cold lookup; cutting it at the search's timeout throws away good copies.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(18);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const SEARCH_LIMIT: usize = 25;
 /// How many of the search's candidates get a `/stream` call before giving up. They're
 /// asked together: one addon answers a cold lookup in the time three sequential ones take.
 const STREAM_TRIES: usize = 3;
@@ -47,14 +54,17 @@ const STREAM_TRIES: usize = 3;
 /// Silence and fades stay inside this; an edit, a loop cut or a re-tempo'd one doesn't.
 const VERSION_TOLERANCE_SECS: u32 = 3;
 const VERSION_TOLERANCE_MS: u64 = VERSION_TOLERANCE_SECS as u64 * 1000;
-/// The size given a stream whose addon and server don't say how big it is.
-pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
 /// With Atmos on, a lossless copy already in hand waits this long for an Atmos answer
 /// before it plays; the whole race also stays inside the playback path's own budget.
 const ATMOS_GRACE: Duration = Duration::from_secs(5);
 const RACE_BUDGET: Duration = Duration::from_secs(19);
-/// The song a pasted link is tested with, to see what the addon actually serves.
-const CHECK_QUERY: &str = "Blinding Lights The Weeknd";
+/// The Monochrome-first try may not eat the addon's window: a server that speaks both
+/// protocols answers its search in a moment, and one that doesn't must leave the seconds
+/// the addon protocol needs (its search and `/stream` both take seconds on a cold lookup).
+const MONO_FIRST: Duration = Duration::from_secs(5);
+/// The size given a stream whose addon and server don't say how big it is: room enough
+/// for ranged reads while the download finds the real end.
+pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
 
 /// What the player says about the stream it is playing.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,68 +99,54 @@ impl Info {
 
     /// The quality mark's text, worded as Apple Music words it.
     pub fn badge(&self) -> &'static str {
+        if !self.atmos && !self.hires() && !self.lossless() && self.bitrate_kbps.is_some_and(|k| k >= 320) {
+            return "320 kbps";
+        }
+        self.tier()
+    }
+
+    /// The tier without a bitrate in it, for anywhere that names the bitrate
+    /// separately: `badge`'s "320 kbps" would only repeat what stands beside it.
+    pub fn tier(&self) -> &'static str {
         if self.atmos {
             "Dolby Atmos"
         } else if self.hires() {
             "Hi-Res Lossless"
         } else if self.lossless() {
             "Lossless"
-        } else if self.bitrate_kbps.is_some_and(|k| k >= 320) {
-            "320 kbps"
         } else {
             "High"
         }
     }
 
-    /// The one-line audio-quality string the player's track-info and Discord both show:
-    /// the badge, then each format detail that is known, joined with " · ".
-    /// "Hi-Res Lossless · FLAC · 1641 kbps · 24-bit · 44.1 kHz · Stereo".
-    pub fn details_line(&self) -> String {
-        let mut parts: Vec<String> = vec![self.badge().to_owned()];
-        let codec = self.codec.trim();
-        if !codec.is_empty() {
-            parts.push(codec.to_ascii_uppercase());
-        }
-        if let Some(k) = self.bitrate_kbps.filter(|k| *k > 0) {
-            parts.push(format!("{k} kbps"));
-        }
-        if let Some(bits) = self.bit_depth {
-            parts.push(format!("{bits}-bit"));
-        }
-        if let Some(hz) = self.sample_rate.filter(|r| *r > 0) {
-            parts.push(if hz % 1000 == 0 { format!("{} kHz", hz / 1000) } else { format!("{:.1} kHz", hz as f64 / 1000.0) });
-        }
-        if let Some(n) = self.channels.filter(|c| *c > 0) {
-            parts.push(match n {
-                1 => "Mono".to_owned(),
-                2 => "Stereo".to_owned(),
-                _ => format!("{n} ch"),
-            });
-        }
-        parts.join(" · ")
+}
+
+/// What a source's Test says, ported from BitChord's `SourceHealth`
+/// (`AddonSource.health()`): the manifest answers reachable, well-formed and useful
+/// all at once, so the three ways a link can be stand out on the editor's Test line.
+/// `Rejected` is the addon (or the address) being wrong in a way no amount of
+/// retrying fixes; `Unreachable` is a server having a bad minute, worth trying again.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Health {
+    /// There and usable, with what the addon said about itself.
+    Ok(String),
+    /// The addon refused, or isn't an addon: retrying won't help.
+    Rejected(String),
+    /// Couldn't be asked this once: worth trying again.
+    Unreachable(String),
+}
+
+impl Health {
+    /// Whether the row should read as good (a check, not a cross).
+    pub fn good(&self) -> bool {
+        matches!(self, Health::Ok(_))
     }
 
-    /// Like `details_line` but without the sample rate: Discord shows bitrate, not Hz.
-    pub fn rpc_line(&self) -> String {
-        let mut parts: Vec<String> = vec![self.badge().to_owned()];
-        let codec = self.codec.trim();
-        if !codec.is_empty() {
-            parts.push(codec.to_ascii_uppercase());
+    /// The line under the row.
+    pub fn message(&self) -> &str {
+        match self {
+            Health::Ok(m) | Health::Rejected(m) | Health::Unreachable(m) => m,
         }
-        if let Some(k) = self.bitrate_kbps.filter(|k| *k > 0) {
-            parts.push(format!("{k} kbps"));
-        }
-        if let Some(bits) = self.bit_depth {
-            parts.push(format!("{bits}-bit"));
-        }
-        if let Some(n) = self.channels.filter(|c| *c > 0) {
-            parts.push(match n {
-                1 => "Mono".to_owned(),
-                2 => "Stereo".to_owned(),
-                _ => format!("{n} ch"),
-            });
-        }
-        parts.join(" · ")
     }
 }
 
@@ -169,13 +165,16 @@ pub struct Stream {
 pub struct Client {
     base: String,
     manifest: tokio::sync::Mutex<Option<Manifest>>,
-    searches: tokio::sync::Mutex<HashMap<String, Vec<Candidate>>>,
+    searches: tokio::sync::Mutex<SearchCache>,
 }
 
 struct Manifest {
     name: Option<String>,
     defaults: Vec<(String, String)>,
     quality: String,
+    /// The addon asks for BitChord's Android-only authentication
+    /// (`"bitchordAuth": true`), which a desktop client can't provide.
+    auth: bool,
 }
 
 #[derive(Clone)]
@@ -186,10 +185,37 @@ pub(crate) struct Candidate {
     duration: Option<u32>,
     quality: String,
     format: String,
-    /// Which of the addon's own upstreams the row came from (`Tidal`, `Qobuz`, …).
-    provider: String,
     atmos: bool,
     stream_url: Option<String>,
+}
+
+/// A server's recent searches, remembering the order they arrived: a full cache sheds
+/// its oldest entries, not everything at once (a clear-all made the next burst of songs
+/// each re-ask a server that had just answered them).
+#[derive(Default)]
+struct SearchCache {
+    answers: HashMap<String, Vec<Candidate>>,
+    order: std::collections::VecDeque<String>,
+}
+
+const SEARCH_CACHE: usize = 64;
+
+impl SearchCache {
+    fn get(&self, key: &str) -> Option<&Vec<Candidate>> {
+        self.answers.get(key)
+    }
+
+    fn insert(&mut self, key: String, found: Vec<Candidate>) {
+        if !self.answers.contains_key(&key) {
+            self.order.push_back(key.clone());
+            while self.order.len() > SEARCH_CACHE {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.answers.remove(&oldest);
+                }
+            }
+        }
+        self.answers.insert(key, found);
+    }
 }
 
 impl Client {
@@ -212,6 +238,9 @@ impl Client {
     /// Dolby Atmos renditions, so the caller can prefer one across every source.
     pub async fn picks(&self, http: &reqwest::Client, track: &crate::model::Track, atmos: bool) -> anyhow::Result<Vec<Candidate>> {
         let manifest = self.manifest(http).await?;
+        if manifest.auth {
+            anyhow::bail!("{}", AUTH_DESKTOP_MSG);
+        }
         let artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| track.artist_line());
         let title = track.title.clone();
         let mut queries = Vec::new();
@@ -259,7 +288,7 @@ impl Client {
     async fn manifest(&self, http: &reqwest::Client) -> anyhow::Result<Manifest> {
         let mut slot = self.manifest.lock().await;
         if let Some(m) = slot.as_ref() {
-            return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone() });
+            return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone(), auth: m.auth });
         }
         let url = self.endpoint(&["manifest.json"], &[])?;
         let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
@@ -269,8 +298,8 @@ impl Client {
         anyhow::ensure!(resources.is_empty() || resources.iter().any(|r| r.eq_ignore_ascii_case("search")), "the addon doesn't offer search");
         let name = json.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
         let (defaults, quality) = settings(json.get("settings"));
-        let manifest = Manifest { name, defaults, quality };
-        *slot = Some(Manifest { name: manifest.name.clone(), defaults: manifest.defaults.clone(), quality: manifest.quality.clone() });
+        let manifest = Manifest { name, defaults, quality, auth: manifest_auth(&json) };
+        *slot = Some(Manifest { name: manifest.name.clone(), defaults: manifest.defaults.clone(), quality: manifest.quality.clone(), auth: manifest.auth });
         Ok(manifest)
     }
 
@@ -289,11 +318,7 @@ impl Client {
         let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
         let tracks = json.get("tracks").and_then(Value::as_array).cloned().unwrap_or_default();
         let found: Vec<Candidate> = tracks.iter().filter_map(candidate).take(400).collect();
-        let mut cache = self.searches.lock().await;
-        if cache.len() > 64 {
-            cache.clear();
-        }
-        cache.insert(key, found.clone());
+        self.searches.lock().await.insert(key, found.clone());
         Ok(found)
     }
 
@@ -315,25 +340,25 @@ impl Client {
         anyhow::ensure!(!stated_url.is_empty(), "the addon returned no stream URL");
         anyhow::ensure!(playable_url(&stated_url), "the addon returned a URL that isn't http(s)");
         anyhow::ensure!(!encrypted(&json), "the addon returned an encrypted stream");
-        let stated = json.get("format").and_then(Value::as_str).map(str::trim).unwrap_or("");
-        let transport = json.get("manifest").and_then(Value::as_str).or(json.get("mediaType").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(stated);
+        let transport_line = json.get("format").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let transport = json.get("manifest").and_then(Value::as_str).or(json.get("mediaType").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(transport_line);
         let quality = json.get("quality").and_then(Value::as_str).or(json.get("streamQuality").and_then(Value::as_str)).or(json.get("audioQuality").and_then(Value::as_str)).unwrap_or("").trim().to_owned();
         let label = format!("{quality} {} {}", candidate.quality, candidate.format);
         let codec = json.get("codec").and_then(Value::as_str).or(json.get("fileCodec").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_default();
         let container = json.get("container").and_then(Value::as_str).or(json.get("containerFormat").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).unwrap_or("");
         // An addon that names no container puts the file format in `format`, which is the
         // transport keyword instead when the answer is a manifest (handled above).
-        let container = if container.is_empty() && !is_manifest(stated) { stated } else { container };
+        let container = if container.is_empty() && !is_manifest(transport_line) { transport_line } else { container };
         let mime = json.get("mimeType").and_then(Value::as_str).unwrap_or("");
         if is_manifest(transport) {
-            // A prefetch only needs somewhere to start. Fetching and decoding a whole
-            // rendition here would hold a second song's PCM beside the playing one; the
-            // play itself fetches it, so the copy still arrives.
-            anyhow::ensure!(!prefetch, "a manifest rendition is fetched when the song plays");
             // DASH arrives as an MPD, not a file: the Atmos E-AC-3 rendition (or the
             // hi-res FLAC one) is fetched whole and decoded to PCM, so it plays and
             // seeks like any other stream.
             let dash = matches!(transport.trim().to_ascii_lowercase().as_str(), "dash" | "mpd" | "application/dash+xml");
+            // A prefetch only needs somewhere to start. Fetching and decoding a whole
+            // manifest rendition is the play's job: it costs seconds and memory a
+            // prefetch that may never play shouldn't spend.
+            anyhow::ensure!(!prefetch, "a manifest rendition is fetched when the song plays");
             anyhow::ensure!(dash, "the addon returned a streaming manifest, not a file");
             let audio = crate::dash::fetch(http, &stated_url).await?;
             let size = audio.pcm.len() as u64;
@@ -390,14 +415,7 @@ impl Client {
     }
 
     fn endpoint(&self, segments: &[&str], params: &[(String, String)]) -> anyhow::Result<String> {
-        let mut url = url::Url::parse(&self.base)?;
-        {
-            let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("that addon address can't take paths"))?;
-            path.pop_if_empty();
-            for segment in segments {
-                path.push(segment);
-            }
-        }
+        let mut url = base_url_with(&self.base, segments)?;
         {
             let mut query = url.query_pairs_mut();
             for (key, value) in params {
@@ -406,6 +424,98 @@ impl Client {
         }
         Ok(url.into())
     }
+
+    /// The editor's Test: health-checks a link whether or not it's been saved, so a
+    /// typed one reports on itself rather than on a stored source (BitChord's
+    /// `SourceRegistry::probeCandidate`). The manifest answers reachable, well-formed
+    /// and useful in one read; an addon that never published one may still answer a
+    /// search, and is healthy the moment it does — which is why a failed manifest read
+    /// is given the second opinion before it's called a fault.
+    pub async fn probe(&self, http: &reqwest::Client) -> Health {
+        let url = match self.endpoint(&["manifest.json"], &[]) {
+            Ok(url) => url,
+            Err(e) => return Health::Rejected(format!("{e:#}")),
+        };
+        let manifest = async {
+            let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
+            let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
+            anyhow::ensure!(!id.is_empty(), "that URL answered, but not with an addon manifest");
+            let resources: Vec<&str> = json.get("resources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            anyhow::ensure!(resources.is_empty() || resources.iter().any(|r| r.eq_ignore_ascii_case("search")), "the addon doesn't offer search");
+            let name = json.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+            Ok::<_, anyhow::Error>((name, manifest_auth(&json)))
+        }
+        .await;
+        match manifest {
+            Ok((name, auth)) => {
+                if auth {
+                    return Health::Rejected(AUTH_DESKTOP_MSG.to_owned());
+                }
+                // A manifest alone is only half an answer: what the player does with a
+                // source is search it, so the probe asks for one ordinary word.
+                match probe_search(http, &self.base).await {
+                    Ok(n) => {
+                        let suffix = if n == 1 { "result" } else { "results" };
+                        Health::Ok(format!("{} · search works{}", name.unwrap_or_else(|| self.host()), (n > 0).then(|| format!(" · {n} {suffix}")).unwrap_or_default()))
+                    }
+                    Err(e) => Health::Rejected(format!("search failed: {e:#}")),
+                }
+            }
+            Err(e) => {
+                let reason = format!("{e:#}");
+                // An auth-protected addon (or one that guards even its manifest) says
+                // so in its answer; that's a verdict, not a server having a bad minute.
+                if reason.contains(AUTH_DESKTOP_MSG) {
+                    return Health::Rejected(reason);
+                }
+                match probe_search(http, &self.base).await {
+                    Ok(n) => Health::Ok(format!("No manifest · search works · {n} result{}", if n == 1 { "" } else { "s" })),
+                    // Transport trouble (timeout, connect) is a server having a bad
+                    // minute; anything the server itself answered is the addon being wrong.
+                    // get_json maps the transport errors to words, not reqwest types.
+                    Err(_) if transport_failure(&reason) => Health::Unreachable(reason),
+                    Err(_) => Health::Rejected(reason),
+                }
+            }
+        }
+    }
+}
+
+/// What the search probe asks for. Deliberately an ordinary word rather than a
+/// nonsense string: an addon is entitled to nothing for a query nobody could match,
+/// and a probe that reliably comes back empty proves less than one that usually
+/// comes back full (BitChord's `PROBE_QUERY`).
+const PROBE_QUERY: &str = "music";
+
+/// What an addon that turned on BitChord's Android-only authentication means for a
+/// desktop listener, worded once and reused everywhere (the Test line and the
+/// playback log). BitChord addon auth checks a hardware-backed key only the official
+/// BitChord Android app can hold, so no desktop client can pass it.
+const AUTH_DESKTOP_MSG: &str = "requires BitChord Android authentication (only the official BitChord Android app can answer it)";
+
+/// One `/search`, counted. Zero is a success — an addon holding nothing for one query
+/// is answering correctly — so callers read the count, not emptiness.
+async fn probe_search(http: &reqwest::Client, base: &str) -> anyhow::Result<usize> {
+    let mut url = base_url_with(base, &["search"])?;
+    url.query_pairs_mut().append_pair("q", PROBE_QUERY);
+    let json = get_json(http, url.as_str(), REQUEST_TIMEOUT).await?;
+    Ok(json.get("tracks").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
+}
+
+/// `{base}/{segments…}`, for a base that may carry a query of its own — an install
+/// link like `…/quality/manifest.json?sources=tidal` normalizes to a base ending in
+/// `?sources=tidal`. Pasting the path on with `format!` would land it after the
+/// query, where no server looks for it.
+fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
+    let mut url = url::Url::parse(base)?;
+    {
+        let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("that addon address can't take paths"))?;
+        path.pop_if_empty();
+        for segment in segments {
+            path.push(segment);
+        }
+    }
+    Ok(url)
 }
 
 /// The best copy across every source. Each source searches and opens its stream at the
@@ -417,9 +527,17 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
     for client in sources.iter().cloned() {
         let (http, track) = (http.clone(), track.clone());
         tasks.spawn(async move {
-            let found = match client.picks(&http, &track, atmos).await {
-                Ok(picks) => open_first(&http, &client, &picks, atmos, track.duration, prefetch).await,
-                Err(e) => Err(e),
+            // The Monochrome answer has to come fast: a dual-protocol server answers a
+            // search in a moment, and a hanging or slow one must not eat the window the
+            // addon protocol needs to search and open its stream in (this is what starved
+            // pure-addon servers like the unified ones of their 20-second play budget).
+            let mono = tokio::time::timeout(MONO_FIRST, find_on_monochrome(&http, &client, &track)).await.unwrap_or(None);
+            let found = match mono {
+                Some(s) => Ok(Some(s)),
+                None => match client.picks(&http, &track, atmos).await {
+                    Ok(picks) => open_first(&http, &client, &picks, atmos, track.duration, prefetch).await,
+                    Err(e) => Err(e),
+                },
             };
             (client, found)
         });
@@ -531,53 +649,64 @@ fn usable(stream: &Stream) -> bool {
     stream.info.atmos || stream.info.lossless()
 }
 
-/// What a pasted link really is, for the settings row that tests it: the addon's own name,
-/// the upstreams it lists, and what one of its lossless rows actually streams. A row can
-/// promise lossless and deliver 320 kbps, so the test opens one rather than trusting it.
-/// Neither the answer nor an error names the link: it carries a token.
-pub async fn check(http: &reqwest::Client, raw: &str) -> anyhow::Result<String> {
-    let Some(client) = Client::new(raw) else { anyhow::bail!("that isn't an http(s) link") };
-    let manifest = client.manifest(http).await?;
-    let name = manifest.name.clone().unwrap_or_else(|| client.host());
-    let rows = client.search(http, &manifest, CHECK_QUERY, false).await?;
-    anyhow::ensure!(!rows.is_empty(), "{name} answered its search with nothing");
-    let mut providers: Vec<String> = Vec::new();
-    for row in &rows {
-        let provider = if row.provider.is_empty() { row.id.split(':').next().unwrap_or("").to_owned() } else { row.provider.clone() };
-        if !provider.is_empty() && !providers.iter().any(|p| p.eq_ignore_ascii_case(&provider)) {
-            providers.push(provider);
-        }
-    }
-    let served = providers.join(", ");
-    match client.open(http, &rows[0], false, false).await {
-        Ok(Some(s)) if usable(&s) => Ok(format!("{name} · {served} · plays {}", s.info.badge())),
-        Ok(Some(s)) => anyhow::bail!("{name} streamed {} where its row promised lossless", s.info.details_line()),
-        Ok(None) => anyhow::bail!("{name} sent no stream for a test song"),
-        Err(e) => anyhow::bail!("{name}: {e}"),
+/// The Monochrome protocol tried first against the same link: an addon server that
+/// speaks both gets its answer (which carries loudness data the addon protocol doesn't)
+/// ahead of the addon round-trips. `None` leaves the addon protocol to it.
+async fn find_on_monochrome(http: &reqwest::Client, client: &Client, track: &crate::model::Track) -> Option<Stream> {
+    let query = crate::providers::Query::of(track);
+    let server = crate::providers::Server {
+        url: client.base.clone(),
+        kind: crate::providers::Kind::Streamer,
+        name: client.host(),
+    };
+    // resolve_on handles its own caching (separate from the addon search cache) and
+    // identifying the kind if needed.
+    let found = crate::providers::Monochrome::resolve_addon_as_mono(http, &server, &query).await?;
+    Some(Stream { url: found.url, size: found.size, duration_ms: found.duration_ms, format: found.format, info: found.info, data: None })
+}
+
+/// Health-checks a pasted link, saved or not. A link that isn't http(s) can't be a
+/// source, and is rejected before anything is asked of the network.
+pub async fn probe_link(raw: &str, http: &reqwest::Client) -> Health {
+    match Client::new(raw) {
+        Some(client) => client.probe(http).await,
+        None => Health::Rejected("That isn't an http(s) link, so it can't be a source.".to_owned()),
     }
 }
 
 /// The base URL with a trailing slash or a pasted `…/manifest.json` taken off.
+/// A query string or fragment (e.g. `…/manifest.json?sources=tidal`)
+/// no longer defeats the suffix check, and is preserved on the returned
+/// base so per-request query params keep working.
 pub fn normalize_base(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let (path, query) = match trimmed.split_once('?') {
-        Some((path, query)) => (path, Some(query)),
-        None => (trimmed, None),
-    };
-    if !path.contains("://") {
-        return trimmed.to_owned();
-    }
-    let last = path.rsplit('/').next().unwrap_or("");
-    let base = if last.to_ascii_lowercase().ends_with(".json") { &path[..path.len() - last.len()] } else { path };
-    let base = base.trim_end_matches('/');
-    match query {
-        Some(query) => format!("{base}?{query}"),
-        None => base.to_owned(),
+    let trimmed = raw.trim().trim_end_matches('/');
+    // Split off any `?...` / `#...` tail before inspecting the last path
+    // segment; otherwise `manifest.json?sources=…` never matches `.json`
+    // and every endpoint built from the base 404s.
+    let cut = trimmed.find(|c| c == '?' || c == '#').unwrap_or(trimmed.len());
+    let (head, tail) = trimmed.split_at(cut);
+    let last = head.rsplit('/').next().unwrap_or("");
+    if last.to_ascii_lowercase().ends_with(".json") && head.contains("://") {
+        format!("{}{}", head[..head.len() - last.len()].trim_end_matches('/'), tail)
+    } else {
+        trimmed.to_owned()
     }
 }
 
 fn host_of(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// Whether the manifest turns on BitChord's addon authentication. The Android app
+/// accepts `true`, `1`, `"true"` and `"1"`; anything else (or nothing) means the
+/// addon works without it.
+fn manifest_auth(json: &Value) -> bool {
+    match json.get("bitchordAuth") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n == 1.0),
+        Some(Value::String(s)) => matches!(s.trim(), "true" | "1"),
+        _ => false,
+    }
 }
 
 fn settings(value: Option<&Value>) -> (Vec<(String, String)>, String) {
@@ -631,7 +760,6 @@ fn candidate(v: &Value) -> Option<Candidate> {
         duration: seconds(v.get("duration").unwrap_or(&Value::Null)),
         quality: v.get("audioQuality").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
         format: v.get("format").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
-        provider: v.get("provider").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
         atmos: json_is_atmos(v),
         stream_url: v.get("streamURL").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
     })
@@ -822,13 +950,14 @@ fn score(candidate: &Candidate, title: &str, artist: &str, duration: Option<u32>
     {
         return None;
     }
-    // Same recording, not a remix, an edit or a sped-up copy that kept the title: the
-    // length has to track the YouTube duration to within a few seconds. Trailing silence
-    // and fades live inside that; a different cut of the song does not.
-    if let (Some(wanted), Some(got)) = (duration, candidate.duration)
-        && wanted.abs_diff(got) > VERSION_TOLERANCE_SECS
-    {
-        return None;
+    // Same recording, not a sped-up or slowed copy that kept the title: the length
+    // has to track the YouTube duration. Allow a few seconds for trailing silence and
+    // fades, and a small slice of the song for real edits, but reject a re-tempo'd one.
+    if let (Some(wanted), Some(got)) = (duration, candidate.duration) {
+        let slack = wanted.max(got).saturating_mul(8) / 100;
+        if wanted.abs_diff(got) > slack.max(12) {
+            return None;
+        }
     }
     let artist_score = match (target_artists.is_empty() || candidate_artists.is_empty(), target_artists == candidate_artists) {
         (true, _) => 0,
@@ -1002,6 +1131,9 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration) -> anyho
             anyhow::bail!("not found");
         }
         if !status.is_success() {
+            // A refusal of this app's own name: the release line's agent is asked once,
+            // and kept for the rest of the session if it answers. Before anything that
+            // reads the body — a 403 is the agent, not the link.
             if status == reqwest::StatusCode::FORBIDDEN {
                 if attempt == 0 {
                     use_release_agent();
@@ -1009,15 +1141,17 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration) -> anyho
                 }
                 anyhow::bail!("the addon doesn't answer this app");
             }
+            // BitChord addon auth answers 401 (503 while its verifier can't load keys)
+            // with a JSON body naming itself; say what that means rather than "HTTP 401".
             let body = response.text().await.unwrap_or_default();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                let msg = serde_json::from_str::<Value>(&body).ok()
-                    .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned))
-                    .unwrap_or_default();
-                if msg.contains("official") || body.contains("bitchord_auth") {
-                    anyhow::bail!("this addon only works in the official BitChord app (it requires device verification this client can't provide)");
-                }
-                anyhow::bail!("the addon refused the request (sign-in required)");
+            if let Some(msg) = auth_answer(&body) {
+                anyhow::bail!("{} {msg}", AUTH_DESKTOP_MSG);
+            }
+            // Other addons guard themselves behind a sign-in on their own site and point
+            // at it ("login":"/auth/discord/login"): they work once the listener has
+            // signed in there and pasted the personal link that comes out of it.
+            if let Some(login_url) = login_url(url, &body) {
+                anyhow::bail!("this addon needs your own sign-in link: open {login_url} in a browser, sign in, and paste the link it gives you here");
             }
             anyhow::bail!("HTTP {}", status.as_u16());
         }
@@ -1025,7 +1159,7 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration) -> anyho
         anyhow::ensure!(!bytes.is_empty(), "the addon answered with nothing");
         return Ok(serde_json::from_slice(&bytes)?);
     }
-    anyhow::bail!("the addon doesn't answer this app");
+    anyhow::bail!("the addon doesn't answer this app")
 }
 
 /// Addon links carry a token: a request failure names its kind, never the URL the
@@ -1038,6 +1172,34 @@ fn addon_err(e: reqwest::Error) -> anyhow::Error {
     } else {
         anyhow::anyhow!("the addon request failed")
     }
+}
+
+/// Whether a mapped addon failure was the transport (timeout, connect) rather than the
+/// addon itself: those are a server having a bad minute, worth another try.
+fn transport_failure(reason: &str) -> bool {
+    reason.contains("timed out") || reason.contains("didn't connect") || reason.contains("request failed")
+}
+
+/// The reason a `401 {"error":"bitchord_auth",…}` answer gave, for the log line.
+fn auth_answer(body: &str) -> Option<String> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    if json.get("error").and_then(Value::as_str) != Some("bitchord_auth") {
+        return None;
+    }
+    let code = json.get("code").and_then(Value::as_str).unwrap_or("");
+    Some(match code {
+        "expired" | "stale_proof" => "the addon's proof went stale".to_owned(),
+        "unavailable" => "the addon's verifier couldn't load BitChord's keys".to_owned(),
+        _ => "the addon refused this client".to_owned(),
+    })
+}
+
+/// The sign-in address a guarded addon points at ("login":"/auth/discord/login"),
+/// resolved against the request that was refused.
+fn login_url(request: &str, body: &str) -> Option<String> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    let login = json.get("login").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())?;
+    url::Url::parse(request).ok()?.join(login).ok().map(String::from)
 }
 
 /// How many bytes the stream holds, from a HEAD or a one-byte range request.
@@ -1067,8 +1229,39 @@ mod tests {
         assert_eq!(normalize_base("https://music.example/addon/manifest.json"), "https://music.example/addon");
         assert_eq!(normalize_base("https://music.example/addon/MANIFEST.JSON"), "https://music.example/addon");
         assert_eq!(normalize_base("https://music.example"), "https://music.example");
-        // A manifest link with a token query is still a manifest link.
-        assert_eq!(normalize_base("https://music.example/addon/manifest.json?t=abc"), "https://music.example/addon?t=abc");
+    }
+
+    #[test]
+    fn base_keeps_query_when_manifest_is_stripped() {
+        // Install URLs like `…/manifest.json?sources=tidal` must still
+        // normalize: without the split below, the suffix never matches
+        // and every endpoint built from the base 404s.
+        assert_eq!(
+            normalize_base("https://music.example/<token>/quality/manifest.json?sources=tidal"),
+            "https://music.example/<token>/quality?sources=tidal"
+        );
+        assert_eq!(
+            normalize_base("https://music.example/addon/manifest.json?foo=1#frag"),
+            "https://music.example/addon?foo=1#frag"
+        );
+        // No manifest suffix: untouched, query included.
+        assert_eq!(
+            normalize_base("https://music.example/addon?x=1"),
+            "https://music.example/addon?x=1"
+        );
+    }
+
+    #[test]
+    fn the_manifest_url_keeps_the_bases_query() {
+        // The install link's `?sources=tidal` survives normalization onto the base, so
+        // every endpoint must be built with the path before the query, not after it.
+        let base = normalize_base("https://addon.example/abc/quality/manifest.json?sources=tidal");
+        assert_eq!(base, "https://addon.example/abc/quality?sources=tidal");
+        let manifest = base_url_with(&base, &["manifest.json"]).unwrap();
+        assert_eq!(manifest.as_str(), "https://addon.example/abc/quality/manifest.json?sources=tidal");
+        let mut search = base_url_with(&base, &["search"]).unwrap();
+        search.query_pairs_mut().append_pair("quality", "LOSSLESS").append_pair("q", "test");
+        assert_eq!(search.as_str(), "https://addon.example/abc/quality/search?sources=tidal&quality=LOSSLESS&q=test");
     }
 
     #[test]
@@ -1088,7 +1281,6 @@ mod tests {
             duration: Some(200),
             quality: String::new(),
             format: String::new(),
-            provider: String::new(),
             atmos: false,
             stream_url: None,
         };
@@ -1107,7 +1299,6 @@ mod tests {
             duration: Some(200),
             quality: String::new(),
             format: String::new(),
-            provider: String::new(),
             atmos: false,
             stream_url: None,
         };
@@ -1129,29 +1320,17 @@ mod tests {
             duration: Some(secs),
             quality: String::new(),
             format: String::new(),
-            provider: String::new(),
             atmos: false,
             stream_url: None,
         };
         let pick = |secs: u32| rank(vec![row(secs)], "Call Me Maybe", "Carly Rae Jepsen", Some(202), false).len();
         assert_eq!(pick(200), 1); // a couple of seconds of trailing silence: the same take
-        assert_eq!(pick(205), 1); // still inside the three-second tolerance
-        assert_eq!(pick(206), 0); // past it, even for a song this long
+        assert_eq!(pick(210), 1); // inside the 8% slice
         assert_eq!(pick(160), 0); // sped-up: a shorter take of the same title
         assert_eq!(pick(250), 0); // slowed: a longer one
-        // The tolerance is seconds, not a slice, so it doesn't loosen for a short song.
-        assert_eq!(rank(vec![row(93)], "Call Me Maybe", "Carly Rae Jepsen", Some(90), false).len(), 1);
-        assert_eq!(rank(vec![row(94)], "Call Me Maybe", "Carly Rae Jepsen", Some(90), false).len(), 0);
-    }
-
-    #[test]
-    fn a_stream_measured_off_the_song_is_the_wrong_cut_of_it() {
-        assert_eq!(off_version(0, Some(202)), None); // no measurement to trust
-        assert_eq!(off_version(202_000, Some(202)), None);
-        assert_eq!(off_version(204_900, Some(202)), None); // inside the tolerance
-        assert_eq!(off_version(205_600, Some(202)), Some(4)); // past it, rounded
-        assert_eq!(off_version(180_000, Some(202)), Some(22)); // a longer edit
-        assert_eq!(off_version(202_000, None), None);
+        // A short song keeps the few-second floor rather than a too-tight 8%.
+        assert_eq!(rank(vec![row(100)], "Call Me Maybe", "Carly Rae Jepsen", Some(90), false).len(), 1);
+        assert_eq!(rank(vec![row(105)], "Call Me Maybe", "Carly Rae Jepsen", Some(90), false).len(), 0);
     }
 
     #[test]
@@ -1163,7 +1342,6 @@ mod tests {
             duration: Some(200),
             quality: String::new(),
             format: String::new(),
-            provider: String::new(),
             atmos,
             stream_url: None,
         };
@@ -1198,80 +1376,35 @@ mod tests {
     }
 
     #[test]
-    fn the_quality_line_is_the_badge_then_the_known_numbers() {
-        let info = |codec: &str, rate: Option<u32>, bits: Option<u32>| Info {
-            source: "Addon".into(),
-            host: "example".into(),
-            codec: codec.into(),
-            quality: String::new(),
-            bitrate_kbps: None,
-            sample_rate: rate,
-            bit_depth: bits,
-            channels: None,
-            atmos: false,
-            size: 1,
-            duration_ms: 1,
-        };
-        let hi_res = Info {
-            bitrate_kbps: Some(1641),
-            channels: Some(2),
-            ..info("FLAC", Some(44_100), Some(24))
-        };
-        assert_eq!(hi_res.details_line(), "Hi-Res Lossless · FLAC · 1641 kbps · 24-bit · 44.1 kHz · Stereo");
-        let atmos = Info {
-            atmos: true,
-            bitrate_kbps: Some(768),
-            channels: Some(6),
-            ..info("E-AC-3 JOC", Some(48_000), None)
-        };
-        assert_eq!(atmos.details_line(), "Dolby Atmos · E-AC-3 JOC · 768 kbps · 48 kHz · 6 ch");
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn live_chain_picks_atmos_then_lossless() {
-        let Ok(link) = std::env::var("YTM_HIRES_TEST") else { return };
-        let http = reqwest::Client::builder().user_agent(USER_AGENT).build().unwrap();
-        let client = std::sync::Arc::new(Client::new(&link).expect("an addon link"));
-        // The settings row's test, first: it says what the addon really serves.
-        match check(&http, &link).await {
-            Ok(summary) => println!("check: {summary}"),
-            Err(e) => println!("check failed: {e:#}"),
-        }
-        let track = |title: &str, artist: &str, duration: u32| -> crate::model::Track {
-            serde_json::from_value(serde_json::json!({
-                "id": format!("{title}-{artist}"),
-                "title": title,
-                "artists": [{"name": artist, "id": null}],
-                "album": null,
-                "duration": duration,
-                "thumbs": [],
-                "track_nr": null,
-                "plays": null,
-            }))
-            .unwrap()
-        };
-        for (title, artist, secs) in [("Apple", "Charli xcx", 152u32), ("Good Luck, Babe!", "Chappell Roan", 218), ("Sailing Ships", "Riverside Drift", 247)] {
-            for atmos in [true, false] {
-                // The picks probe says why a lookup missed (errors are URL-free by then).
-                match client.picks(&http, &track(title, artist, secs), atmos).await {
-                    Ok(picks) => println!("atmos={atmos} {title}: {} candidate(s)", picks.len()),
-                    Err(e) => println!("atmos={atmos} {title}: picks failed: {e:#}"),
-                }
-                match find_all(&http, std::slice::from_ref(&client), &track(title, artist, secs), atmos, false).await {
-                    Some(s) => println!("atmos={atmos} {title}: atmos={} badge={} codec={} host={}", s.info.atmos, s.info.badge(), s.info.codec, s.info.host),
-                    None => println!("atmos={atmos} {title}: nothing"),
-                }
-            }
-        }
-    }
-
-    #[test]
     fn atmos_rows_are_read_off_the_names_addons_use() {
         let row = |json: Value| json_is_atmos(&json);
         assert!(row(serde_json::json!({"audioMode": "DOLBY_ATMOS"})));
         assert!(row(serde_json::json!({"audioModes": ["STEREO", "DOLBY_ATMOS"]})));
         assert!(row(serde_json::json!({"quality": "E-AC-3 JOC"})));
         assert!(!row(serde_json::json!({"audioMode": "STEREO", "format": "FLAC"})));
+    }
+
+    #[test]
+    fn bitchord_auth_flags_are_read_like_the_android_app_reads_them() {
+        let flag = |v: Value| manifest_auth(&serde_json::json!({ "id": "x", "bitchordAuth": v }));
+        assert!(flag(Value::Bool(true)));
+        assert!(flag(Value::from(1)));
+        assert!(flag(Value::from("true")));
+        assert!(flag(Value::from("1")));
+        assert!(flag(Value::from("  true  ")));
+        assert!(!flag(Value::Bool(false)));
+        assert!(!flag(Value::from(0)));
+        assert!(!flag(Value::from("false")));
+        assert!(!flag(Value::from("off")));
+        assert!(!manifest_auth(&serde_json::json!({ "id": "x" })));
+    }
+
+    #[test]
+    fn an_auth_answer_is_named_for_what_it_is() {
+        let body = r#"{"error":"bitchord_auth","code":"missing","message":"no credentials"}"#;
+        assert_eq!(auth_answer(body).as_deref(), Some("the addon refused this client"));
+        assert_eq!(auth_answer(r#"{"error":"bitchord_auth","code":"unavailable"}"#).as_deref(), Some("the addon's verifier couldn't load BitChord's keys"));
+        assert!(auth_answer(r#"{"error":"other"}"#).is_none());
+        assert!(auth_answer("not json").is_none());
     }
 }

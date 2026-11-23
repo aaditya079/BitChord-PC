@@ -6,6 +6,10 @@
 //! player with the mirror of the room and sends only the difference, then does the same
 //! in reverse and moves the player. Nothing is "sent to the host": the host is a member
 //! like anyone else, and what one device announces, that device follows too.
+//!
+//! This fork keeps two room kinds on the one page: the relay jam (`crate::jam`, the
+//! parties the BitChord phones and this app share) and the web app's Listen Together
+//! (`ui/party.rs`). Only one is live at a time: starting either stands the other down.
 
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::Ordering;
@@ -13,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Align2, RichText, Sense, Ui, pos2, vec2};
 
-use super::pages::{divider, page_title, section_label, setting_row, settings_card, settings_field, toggle};
+use super::pages::{divider, page_title, section_label, setting_row, settings_card, toggle};
 use super::widgets::{icon_at, pill};
 use super::{Action, App, Page};
 use crate::audio::AudioCmd;
@@ -102,6 +106,11 @@ impl Session {
         self.conn.is_some()
     }
 
+    /// The room's code, or empty outside one: the Discord card's Listen together button.
+    pub fn code(&self) -> String {
+        self.conn.as_ref().map(|c| c.code()).unwrap_or_default()
+    }
+
     pub fn is_host(&self) -> bool {
         self.active() && self.party.you_host()
     }
@@ -188,21 +197,25 @@ pub fn join(app: &mut App, code: &str) {
 /// Leave the room. The relay has no "end the party": a room goes with its last member,
 /// so a host who is done simply leaves too. Playback carries on here.
 pub fn leave(app: &mut App) {
-    app.jam.conn = None;
+    // Only one room kind at a time: a party on the web app's server stands down too.
+    super::party::leave(app);
+    if let Some(c) = app.jam.conn.take() {
+        c.leave();
+    }
     fresh(app, false);
+    // A follower's queue was the room's: hidden explicit songs leave it.
+    app.queue.drop_explicit();
 }
 
 /// Dev hooks: YTM_JAM_HOST starts a room, YTM_JAM_JOIN=<code> joins one. The relay names
 /// a room we start, so there's no code for the host's hook to carry.
 pub fn dev_hooks(app: &mut App) {
     if super::dev_var("YTM_JAM_HOST").is_some() {
-        app.go(Page::Settings);
+        app.go(Page::Jam);
         start(app);
-        app.jam_open = true;
     } else if let Some(code) = super::dev_var("YTM_JAM_JOIN") {
-        app.go(Page::Settings);
+        app.go(Page::Jam);
         join(app, &code);
-        app.jam_open = true;
     }
 }
 
@@ -246,14 +259,18 @@ pub fn dev_script(app: &mut App, ctx: &egui::Context, now: f64) {
                 }
             }
             a if a.starts_with("move=") => {
-                // Slide a song still to come one place, as the queue panel's arrows do.
+                // Slide a song still to come one place, the way a dragged queue row does.
                 if let Some(cur) = app.queue.index {
-                    let (i, dir) = if &a[5..] == "up" { (cur + 2, -1) } else { (cur + 1, 1) };
-                    app.apply(Action::QueueMove(i, dir));
+                    let up = &a[5..] == "up";
+                    let i = if up { cur + 2 } else { cur + 1 };
+                    let gap = if up { i - 1 } else { i + 2 };
+                    if let Some(id) = app.queue.tracks.get(i).map(|t| t.id.clone()) {
+                        app.apply(Action::QueueMove { from: i, gap, id });
+                    }
                 }
             }
             a if a.starts_with("add=") => {
-                let track = crate::model::Track { id: a[4..].to_owned(), title: "Test song".into(), artists: vec![], album: None, duration: None, thumbs: vec![], track_nr: None, plays: None, music_video: false };
+                let track = crate::model::Track { id: a[4..].to_owned(), title: "Test song".into(), artists: vec![], album: None, duration: None, thumbs: vec![], track_nr: None, plays: None, music_video: false, ..Default::default() };
                 app.apply(Action::Enqueue(track));
             }
             a if a.starts_with("seek=") => {
@@ -283,9 +300,9 @@ pub fn open_link(app: &mut App, code: String, server: Option<String>) {
     if let Some(server) = server {
         app.jam_server = server;
     }
-    app.go(Page::Settings);
+    app.party_view = false;
+    app.go(Page::Jam);
     join(app, &code);
-    app.jam_open = true;
 }
 
 /// Every frame: take what the relay said, then tell it our differences and follow where
@@ -304,6 +321,8 @@ pub fn tick(app: &mut App, ctx: &egui::Context) {
         on_event(app, e);
     }
     if promoted {
+        // The queue is ours now: hidden explicit songs leave it.
+        app.queue.drop_explicit();
         app.toast("You're the host now");
     }
     app.jam.party = party.clone();
@@ -373,7 +392,7 @@ fn on_event(app: &mut App, e: Event) {
 
 /// Where the player is, as the room counts it.
 fn position_ms(app: &App) -> u64 {
-    let live = app.audio.status.playing_gen.load(Ordering::Relaxed) == app.generation;
+    let live = app.audio.status.started(app.generation);
     match app.resume_at {
         // A parked position describes a song that hasn't been loaded yet. Once this generation
         // really is the one running, the player's own needle is the truth — otherwise a park
@@ -637,6 +656,9 @@ fn reconcile(app: &mut App, ctx: &egui::Context, party: &Party, head: Option<&Pl
         app.audio.status.position_ms.store(head.ms, Ordering::Relaxed);
         app.audio.status.duration_ms.store(length, Ordering::Relaxed);
         app.request_art();
+        if let Some(t) = app.current().cloned() {
+            app.show_in_media(&t);
+        }
         return;
     } else {
         if app.playing() {
@@ -706,35 +728,74 @@ pub fn refused(app: &App, a: &Action) -> bool {
         | Action::Open(Target::Song(_))
         | Action::QueueJump(_)
         | Action::QueueRemove(_)
-        | Action::QueueMove(..)
+        | Action::QueueClear
+        | Action::QueueMove { .. }
+        | Action::QueueInsert { .. }
         | Action::Seek(_) => true,
         _ => false,
     }
 }
 
-/// Settings › Account › Listen together: the party controls as a section of their own,
-/// with one line back to Account. Returns true when that line is pressed.
-pub fn subpage(app: &mut App, ui: &mut Ui) -> bool {
-    ui.add_space(12.0);
-    let back = pill(ui, "Account", Some(icon::CHEVRON_LEFT), false).clicked();
-    page_title(ui, "Listen together");
-    if app.jam.active() {
-        room(app, ui);
-    } else {
-        lobby(app, ui);
-    }
-    back
+/// The sidebar's Listen together page: two room kinds, the relay jam this port brought
+/// and the party server the web app and the phone share (Listen Together), one live at
+/// a time.
+pub fn page(app: &mut App, ui: &mut Ui) {
+    let avail = ui.available_width();
+    let w = avail.min(720.0);
+    ui.horizontal(|ui| {
+        ui.add_space(((avail - w) / 2.0).max(0.0));
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            page_title(ui, "Listen together");
+            // Two room kinds: the relay jam, and the party server the web app and the
+            // phone share (Listen Together).
+            ui.horizontal(|ui| {
+                if pill(ui, "Jam", None, !app.party_view).clicked() {
+                    app.party_view = false;
+                }
+                ui.add_space(8.0);
+                if pill(ui, "Listen Together", None, app.party_view).clicked() {
+                    app.party_view = true;
+                }
+            });
+            ui.add_space(10.0);
+            if app.party_view {
+                super::party::page(app, ui);
+            } else if app.jam.active() {
+                room(app, ui);
+            } else {
+                lobby(app, ui);
+            }
+        });
+    });
 }
 
 fn dim(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).font(theme::regular(13.5)).color(theme::text_dim()));
 }
 
+/// A one-line box on a glass fill, the width the row gives it (the Settings pages' fields).
+fn settings_field(ui: &mut Ui, text: &mut String, hint: &str, limit: usize) {
+    let (rect, _) = ui.allocate_exact_size(vec2(200.0, 36.0), Sense::hover());
+    ui.painter().rect_filled(rect, 10.0, theme::glass(0.08));
+    let inner = rect.shrink2(vec2(12.0, 4.0));
+    ui.put(
+        inner,
+        egui::TextEdit::singleline(text)
+            .hint_text(RichText::new(hint).color(theme::text_faint()))
+            .font(theme::regular(14.0))
+            .char_limit(limit)
+            .frame(egui::Frame::NONE)
+            .align(egui::Align2::LEFT_CENTER)
+            .desired_width(inner.width()),
+    );
+}
+
 fn lobby(app: &mut App, ui: &mut Ui) {
     dim(ui, &format!("Listen to the same music at the same moment, on up to {} devices. Anyone in the party can play, pause and skip, unless the host turns that off.", crate::jam::DEFAULT_MEMBERS));
     if app.account_name.is_none() {
         ui.add_space(8.0);
-        dim(ui, "A party uses your YouTube Music account for your name. Sign in above to bring it along.");
+        dim(ui, "A party uses your YouTube Music account for your name. Sign in in Settings to bring it along.");
     }
     section_label(ui, "Start a party", None);
     settings_card(ui, |ui| {

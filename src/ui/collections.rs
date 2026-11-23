@@ -4,13 +4,43 @@
 use std::collections::HashSet;
 
 use crate::backend::{Collection, Req};
-use crate::model::{ShelfKind, Target, Track};
+use crate::model::{Card, ShelfKind, Target, Track};
 
 use super::lists::{Arrival, Done, LIKED_MUSIC, Opened, Start};
 use super::queue::QueueFill;
 use super::{App, shuffle};
 
 impl App {
+    /// What the queue was started from, while the song playing is one of it: what kind
+    /// of thing it is ("playlist", "album", "artist"), its name, and where it opens.
+    pub(super) fn playing_from(&self) -> Option<(&'static str, String, Target)> {
+        let source = self.queue_source.as_ref().filter(|_| !self.queue.plays_elsewhere())?;
+        let current = self.current();
+        // Played straight from its card: the name came with its songs.
+        let played = || self.played_title.as_ref().filter(|(t, _)| t == source).map(|(_, n)| n.clone());
+        let (kind, name) = match source {
+            Target::Playlist(id) if id == LIKED_MUSIC => ("playlist", "Liked Music".to_owned()),
+            Target::Playlist(id) => {
+                // Kept while it plays; the sidebar's list has the name if it went anyway.
+                let sidebar = || {
+                    let list = self.library.as_ref().map(|l| l.playlists.as_slice()).or(self.sidebar_cache.as_deref()).unwrap_or_default();
+                    list.iter().find(|c| matches!(&c.target, Target::Playlist(p) if p == id)).map(|c| c.title.clone())
+                };
+                ("playlist", self.opened(id).map(|o| o.c.title.clone()).or_else(played).or_else(sidebar)?)
+            }
+            Target::Album(id) => {
+                let from_song = || current?.album.as_ref().filter(|a| a.id.as_deref() == Some(id.as_str())).map(|a| a.name.clone());
+                ("album", self.opened(id).map(|o| o.c.title.clone()).or_else(played).or_else(from_song)?)
+            }
+            Target::Artist(id) => {
+                let from_song = || current?.artists.iter().find(|a| a.id.as_deref() == Some(id.as_str())).map(|a| a.name.clone());
+                ("artist", self.artist.as_ref().filter(|a| &a.id == id).map(|a| a.name.clone()).or_else(played).or_else(from_song)?)
+            }
+            Target::Song(_) => return None,
+        };
+        (!name.trim().is_empty()).then(|| (kind, name, source.clone()))
+    }
+
     /// Load an album or playlist, unless a load of it is under way. `changed`: if one is,
     /// it's loaded once more afterwards.
     pub(super) fn load_list(&mut self, id: &str, album: bool, changed: bool) {
@@ -54,12 +84,21 @@ impl App {
     /// reload asked for just before can still come back without them.)
     pub(super) fn set_liked(&mut self, tracks: &[Track], like: bool) {
         log::debug!("like={like}: {} songs, e.g. {:?}", tracks.len(), tracks.iter().take(3).map(|t| &t.id).collect::<Vec<_>>());
+        let store = !tracks.is_empty();
         for t in tracks {
             if like {
                 self.liked.insert(t.id.clone());
+                if !crate::local::is_local(&t.id) {
+                    // a like says more than a play; the taste keeps the newest fifty
+                    self.listening.liked(t.clone());
+                }
             } else {
                 self.liked.remove(&t.id);
+                self.listening.unliked(&t.id);
             }
+        }
+        if store {
+            self.listening.store(self.backend.data_dir());
         }
         self.lists.set_liked(tracks, like);
     }
@@ -160,7 +199,11 @@ impl App {
     /// The next songs of a playlist played before all of it was in join the queue.
     fn fill_queue(&mut self, id: &str, load: u64, tracks: Vec<Track>, more: bool) {
         let playing_it = self.queue_source == Some(Target::Playlist(id.to_owned()));
-        let Some(filled) = self.queue.fill_from(id, load, tracks, more, playing_it) else { return };
+        let saved = match &mut self.undo {
+            Some(super::undo::Undo::Queue(saved)) => Some(saved),
+            _ => None,
+        };
+        let Some(filled) = self.queue.fill_saved(saved, id, load, tracks, more, playing_it) else { return };
         if filled.ran_out {
             self.next();
         } else if filled.was_at_end && !self.buffering {
@@ -197,5 +240,35 @@ impl App {
             }
         }
         ids.into_iter().collect()
+    }
+}
+
+/// The playlist cards `order`ed (indices into `cards`), the `pinned` ones first in the
+/// order they're pinned in.
+pub(super) fn pinned_first(pinned: &[String], cards: &[Card], order: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let rank = |i: usize| match &cards[i].target {
+        Target::Playlist(id) => pinned.iter().position(|p| p == id),
+        _ => None,
+    };
+    let mut order: Vec<usize> = order.into_iter().collect();
+    // Stable: the rest keep their order.
+    order.sort_by_key(|&i| rank(i).unwrap_or(usize::MAX));
+    order
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pinned_first;
+    use crate::model::{Card, Target};
+
+    #[test]
+    fn pinned_playlists_come_first() {
+        let card = |id: &str| Card { title: String::new(), subtitle: String::new(), thumbs: Vec::new(), target: Target::Playlist(id.into()), round: false, links: Vec::new() };
+        let cards = [card("a"), card("b"), card("c"), card("d")];
+        let pinned = ["d".to_owned(), "b".to_owned(), "gone".to_owned()];
+        assert_eq!(pinned_first(&pinned, &cards, 0..4), [3, 1, 0, 2]);
+        // Sorted some other way, the rest keep that order.
+        assert_eq!(pinned_first(&pinned, &cards, [2, 1, 0, 3]), [3, 1, 2, 0]);
+        assert_eq!(pinned_first(&[], &cards, 0..4), [0, 1, 2, 3]);
     }
 }

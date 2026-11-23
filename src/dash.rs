@@ -52,14 +52,16 @@ pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audi
     let stated_rate = plan.sample_rate;
     let bit_depth = plan.bit_depth;
     let bandwidth = plan.bandwidth;
+    // The decoders write the little-endian bytes the player reads straight off, so the
+    // sample vector is never held alongside a byte copy of itself.
     let (pcm, sample_rate) = tokio::task::spawn_blocking(move || match kind {
-        Kind::Dolby => decode(bytes),
+        Kind::Dolby => decode(&bytes),
         Kind::Flac => decode_flac(bytes),
     }).await??;
     anyhow::ensure!(!pcm.is_empty(), "the rendition decoded to nothing");
     let sample_rate = if sample_rate > 0 { sample_rate } else { stated_rate };
     anyhow::ensure!(sample_rate > 0, "the rendition states no sample rate");
-    // Interleaved stereo i16: four bytes a frame.
+    // `pcm` counts bytes: stereo frames are four of them.
     let duration_ms = pcm.len() as u64 / 4 * 1000 / sample_rate as u64;
     Ok(Audio {
         pcm,
@@ -75,9 +77,9 @@ pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audi
     })
 }
 
-async fn get(http: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
+async fn get(http: &reqwest::Client, url: &str) -> anyhow::Result<bytes::Bytes> {
     let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?;
-    Ok(r.bytes().await.map_err(wire)?.to_vec())
+    r.bytes().await.map_err(wire)
 }
 
 /// Manifest and segment URLs can carry a token: a failure names its kind, never the
@@ -237,13 +239,13 @@ fn duration_attr(v: Option<&str>) -> Option<u64> {
 }
 
 /// The E-AC-3 syncframes inside the fMP4's mdat boxes, decoded and downmixed to
-/// little-endian interleaved stereo i16. Dependent substreams (the JOC objects beyond
-/// the 5.1 bed) carry no program of their own and are skipped.
-fn decode(bytes: Vec<u8>) -> anyhow::Result<(Vec<u8>, u32)> {
+/// interleaved stereo 16-bit little-endian PCM. Dependent substreams (the JOC objects
+/// beyond the 5.1 bed) carry no program of their own and are skipped.
+fn decode(bytes: &[u8]) -> anyhow::Result<(Vec<u8>, u32)> {
     let mut decoder = Decoder::new();
-    let mut pcm: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut pcm: Vec<u8> = Vec::new();
     let mut rate = 0u32;
-    for payload in mdat_payloads(&bytes) {
+    for payload in mdat_payloads(bytes) {
         let mut i = 0usize;
         while i + 7 <= payload.len() {
             if payload[i] != 0x0B || payload[i + 1] != 0x77 {
@@ -275,16 +277,13 @@ fn decode(bytes: Vec<u8>) -> anyhow::Result<(Vec<u8>, u32)> {
         }
     }
     anyhow::ensure!(rate > 0, "no Dolby syncframes in the rendition");
-    // The rendition is gone by now, so the exact-size copy costs nothing extra and the
-    // song doesn't keep a grown buffer's spare half for as long as it plays.
-    pcm.shrink_to_fit();
     Ok((pcm, rate))
 }
 
-/// The FLAC track inside the (fragmented) MP4, decoded to little-endian interleaved
-/// stereo i16.
+/// The FLAC track inside the (fragmented) MP4, decoded to interleaved stereo 16-bit
+/// little-endian PCM. Takes the rendition by value: the reader symphonia probes wants
+/// to own it, and borrowing would mean holding a second copy of the whole file.
 fn decode_flac(bytes: Vec<u8>) -> anyhow::Result<(Vec<u8>, u32)> {
-    let compressed = bytes.len();
     let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
     let mut hint = Hint::new();
     hint.mime_type("audio/mp4");
@@ -298,10 +297,10 @@ fn decode_flac(bytes: Vec<u8>) -> anyhow::Result<(Vec<u8>, u32)> {
     // The decoded frames' spec is authoritative, so read the rate from them.
     let mut rate = 0u32;
     let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
-    // Four bytes a frame. The init segment's frame count sizes the buffer exactly when it
-    // states one; otherwise the compressed length is a close enough starting guess.
-    let want = (track.codec_params.n_frames.unwrap_or(0) as usize).saturating_mul(4);
-    let mut pcm: Vec<u8> = Vec::with_capacity(want.clamp(compressed, compressed * 4));
+    let mut pcm: Vec<u8> = Vec::new();
+    // Reused across frames, re-made only when a later frame needs more room.
+    let mut buf: Option<SampleBuffer<f32>> = None;
+    let sample = |s: f32| (s.clamp(-1.0, 1.0) * 32767.0) as i16;
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
@@ -323,24 +322,26 @@ fn decode_flac(bytes: Vec<u8>) -> anyhow::Result<(Vec<u8>, u32)> {
         // container's declared value so the PCM's length and its rate always agree.
         rate = spec.rate;
         let channels = spec.channels.count();
-        let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        buf.copy_interleaved_ref(decoded);
-        let samples = buf.samples();
+        let sb = match &mut buf {
+            Some(sb) if sb.capacity() >= decoded.capacity() as usize * channels => sb,
+            slot => slot.insert(SampleBuffer::new(decoded.capacity() as u64, spec)),
+        };
+        sb.copy_interleaved_ref(decoded);
+        let samples = sb.samples();
         if channels < 2 {
             for &s in samples {
-                let v = ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes();
+                let v = sample(s).to_le_bytes();
                 pcm.extend_from_slice(&v);
                 pcm.extend_from_slice(&v);
             }
         } else {
             for frame in samples.chunks_exact(channels) {
-                pcm.extend_from_slice(&((frame[0].clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-                pcm.extend_from_slice(&((frame[1].clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+                pcm.extend_from_slice(&sample(frame[0]).to_le_bytes());
+                pcm.extend_from_slice(&sample(frame[1]).to_le_bytes());
             }
         }
     }
     anyhow::ensure!(rate > 0, "the FLAC rendition states no sample rate");
-    pcm.shrink_to_fit();
     Ok((pcm, rate))
 }
 
@@ -371,9 +372,10 @@ fn mdat_payloads(bytes: &[u8]) -> Vec<&[u8]> {
 /// at -3 dB, LFE left out; smaller layouts keep their front pair.
 fn downmix(channels: &[Vec<f32>], pcm: &mut Vec<u8>) {
     let n = channels.first().map_or(0, Vec::len);
+    let sample = |s: f32| (s.clamp(-1.0, 1.0) * 32767.0) as i16;
     let mut push = |l: f32, r: f32| {
-        pcm.extend_from_slice(&((l.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-        pcm.extend_from_slice(&((r.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        pcm.extend_from_slice(&sample(l).to_le_bytes());
+        pcm.extend_from_slice(&sample(r).to_le_bytes());
     };
     const C: f32 = std::f32::consts::FRAC_1_SQRT_2;
     match channels.len() {
@@ -482,7 +484,7 @@ mod tests {
             let http = reqwest::Client::new();
             // Search + stream via the same endpoints the app uses.
             let mk = |q: &str| { let mut u = url::Url::parse(&base).unwrap(); { let mut p = u.path_segments_mut().unwrap(); p.pop_if_empty(); p.push("search"); } u.query_pairs_mut().append_pair("q", q).append_pair("quality", "LOSSLESS").append_pair("atmos", "auto"); u };
-            let r = http.get(mk("Blinding Lights The Weeknd")).header("User-Agent", crate::hires::USER_AGENT).send().await.unwrap();
+            let r = http.get(mk("Blinding Lights The Weeknd")).header("User-Agent", crate::hires::agent()).send().await.unwrap();
             let j: serde_json::Value = r.json().await.unwrap();
             let items = j["tracks"].as_array().or(j["results"].as_array()).cloned().unwrap_or_default();
             let hit = items.iter().find(|t| t["artist"].as_str().unwrap_or("").to_lowercase().contains("weeknd") && t["title"].as_str().unwrap_or("").eq_ignore_ascii_case("Blinding Lights")).unwrap();
@@ -490,7 +492,7 @@ mod tests {
             let mut su = url::Url::parse(&base).unwrap();
             { let mut p = su.path_segments_mut().unwrap(); p.pop_if_empty(); p.push("stream"); p.push(id); }
             su.query_pairs_mut().append_pair("quality", "LOSSLESS").append_pair("atmos", "auto");
-            let sr = http.get(su).header("User-Agent", crate::hires::USER_AGENT).send().await.unwrap();
+            let sr = http.get(su).header("User-Agent", crate::hires::agent()).send().await.unwrap();
             let sj: serde_json::Value = sr.json().await.unwrap();
             assert!(sj["atmos"].as_bool().unwrap_or(false), "not atmos: {:?}", sj["codec"]);
             let mpd = sj["url"].as_str().unwrap();

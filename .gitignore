@@ -1,4 +1,6 @@
 /target
+.planning/
+tmp_release/
 
 installer/Output/
 .claude/

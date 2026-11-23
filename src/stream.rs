@@ -17,6 +17,9 @@ use std::time::Duration;
 use bytes::Bytes;
 
 const BLOCK: u64 = 256 * 1024;
+/// The first block is smaller: a decoder opens after a few hundred bytes, so playback
+/// waits on this one alone, and it still holds seconds of audio while the next arrive.
+const FIRST: u64 = 64 * 1024;
 const WORKERS: usize = 4;
 /// Tries per block before the download gives up, waiting a little longer each time
 /// (about half a minute in all): long enough to ride out a dropped connection.
@@ -27,8 +30,9 @@ const STALL: Duration = Duration::from_secs(20);
 /// googlevideo occasionally starts rejecting a URL partway through (HTTP 403);
 /// a freshly resolved URL for the same video resumes the download.
 const MAX_REFRESHES: u32 = 6;
-/// A prefetch only fetches this much (~16 s of audio) until playback actually opens it:
-/// enough to start at once, without holding a whole extra song in memory.
+/// A prefetch only fetches this much (~10 s of audio at 256 kbps, two HLS segments)
+/// until playback actually opens it: enough to start at once, without holding a whole
+/// extra song in memory.
 const HEAD_BLOCKS: usize = 2;
 /// Files larger than this (about 20 minutes at 256 kbps: long mixes, whole albums in
 /// one video) aren't kept whole. Each reader keeps a window around where it reads,
@@ -38,8 +42,34 @@ const WINDOWED_FROM: u64 = 40 * 1024 * 1024;
 const AHEAD: usize = 40;
 const BEHIND: usize = 8;
 
-/// Resolves a fresh stream URL for the same video.
-pub type Refresh = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>> + Send + Sync>;
+/// Block `idx`'s first byte in a file.
+fn block_start(idx: usize) -> u64 {
+    if idx == 0 { 0 } else { FIRST + (idx as u64 - 1) * BLOCK }
+}
+
+/// The block holding byte `pos` of a file.
+fn block_of(pos: u64) -> usize {
+    if pos < FIRST { 0 } else { 1 + ((pos - FIRST) / BLOCK) as usize }
+}
+
+/// How many blocks a file of `total` bytes takes.
+fn block_count(total: u64) -> usize {
+    if total == 0 { 0 } else { block_of(total - 1) + 1 }
+}
+
+/// What a download fetches.
+pub enum Media {
+    /// One file, in ranges: `FIRST` bytes, then `BLOCK`s.
+    File(String),
+    /// A podcast feed's file on its own server: the same ranges, asked for in a
+    /// `Range` header (googlevideo's `&range=` means nothing there).
+    Feed(String),
+    /// An HLS playlist's segments, one block each.
+    Segments(Vec<String>),
+}
+
+/// Resolves fresh URLs for the same video and format.
+pub type Refresh = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<Media>> + Send>> + Send + Sync>;
 
 /// The container and codec a stream carries.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +104,8 @@ struct Inner {
     /// Block a reader most recently needed; workers prioritize from here.
     want: usize,
     error: Option<String>,
+    /// The download stopped on HTTP 403s that fresh URLs didn't get past.
+    refused: bool,
     readers: usize,
     /// Set once a reader existed and all were dropped.
     cancelled: bool,
@@ -103,6 +135,15 @@ enum Claim {
     Done,
 }
 
+/// Stream buffers alive, for the `YTM_MEM` dev log.
+pub static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub struct Shared {
     inner: Mutex<Inner>,
     ready: Condvar,
@@ -116,6 +157,11 @@ pub struct Shared {
     pub format: Format,
     /// What the player can say about this stream, when its source reported it (addons).
     pub info: Option<crate::hires::Info>,
+    /// A podcast feed's file (`Media::Feed`): MP3 mostly, which seeks by estimate,
+    /// since an exact seek in MP3 reads every frame before the spot.
+    pub feed: bool,
+    /// HLS: each segment's start (s). Its blocks are the segments.
+    pub segments: Option<Arc<[f64]>>,
     /// Flips to true once the download task has stopped (complete, failed or cancelled).
     done: tokio::sync::watch::Sender<bool>,
     /// Wakes waiting workers: `limit` lifted, a reader moved or left, or cancelled.
@@ -126,19 +172,37 @@ impl Shared {
     /// A buffer for `total` bytes. `head_only` (a prefetch) fetches just the start until
     /// a reader opens it.
     pub fn new(total: u64, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>, head_only: bool) -> Arc<Self> {
-        let n = total.div_ceil(BLOCK) as usize;
+        Self::build(block_count(total), total, total > WINDOWED_FROM, duration_ms, loudness_db, format, info, false, None, head_only)
+    }
+
+    /// A buffer for a podcast feed's file of `total` bytes.
+    pub fn feed(total: u64, duration_ms: u64, head_only: bool) -> Arc<Self> {
+        Self::build(block_count(total), total, total > WINDOWED_FROM, duration_ms, None, Format::File { hint: "mp3", mime: None }, None, true, None, head_only)
+    }
+
+    /// A buffer for an HLS stream's segments, starting at `starts` (s).
+    pub fn segmented(starts: Vec<f64>, duration_ms: u64, loudness_db: Option<f32>, head_only: bool) -> Arc<Self> {
+        // About as many segments (~7 s) as a windowed file has blocks (~8 s at 256 kbps).
+        let windowed = starts.len() as u64 > WINDOWED_FROM / BLOCK;
+        Self::build(starts.len(), 0, windowed, duration_ms, loudness_db, Format::Aac, None, false, Some(starts.into()), head_only)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(n: usize, total: u64, windowed: bool, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>, feed: bool, segments: Option<Arc<[f64]>>, head_only: bool) -> Arc<Self> {
         let limit = if head_only { HEAD_BLOCKS.min(n) } else { n };
+        LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 blocks: vec![None; n],
                 in_flight: vec![false; n],
                 want: 0,
                 error: None,
+                refused: false,
                 readers: 0,
                 cancelled: false,
                 limit,
                 wants: Vec::new(),
-                windowed: total > WINDOWED_FROM,
+                windowed,
                 ever: vec![false; n],
                 fetched: 0,
             }),
@@ -149,6 +213,8 @@ impl Shared {
             tempo: Arc::new(std::sync::OnceLock::new()),
             format,
             info,
+            feed,
+            segments,
             done: tokio::sync::watch::Sender::new(false),
             changed: tokio::sync::Notify::new(),
         })
@@ -164,10 +230,9 @@ impl Shared {
     pub fn from_bytes_with_format(data: Vec<u8>, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>) -> Arc<Self> {
         let total = data.len() as u64;
         let data = Bytes::from(data);
-        let blocks: Vec<Option<Bytes>> =
-            (0..total.div_ceil(BLOCK)).map(|i| Some(data.slice(i as usize * BLOCK as usize..((i + 1) * BLOCK).min(total) as usize))).collect();
-        let n = blocks.len();
         let shared = Self::new(total, duration_ms, loudness_db, format, info, false);
+        let n = shared.inner.lock().unwrap().blocks.len();
+        let blocks: Vec<Option<Bytes>> = (0..n).map(|i| Some(data.slice(block_start(i) as usize..block_start(i + 1).min(total) as usize))).collect();
         {
             let mut inner = shared.inner.lock().unwrap();
             inner.blocks = blocks;
@@ -194,6 +259,12 @@ impl Shared {
         self.inner.lock().unwrap().blocks.iter().all(Option::is_some)
     }
 
+    /// Too big to keep whole: blocks behind the reader get dropped as it goes, so a
+    /// seek to a spot whose block is gone would wait for a re-download.
+    pub fn windowed(&self) -> bool {
+        self.inner.lock().unwrap().windowed
+    }
+
     /// Wait until the download stops, however it ends.
     pub async fn finished(&self) {
         let _ = self.done.subscribe().wait_for(|d| *d).await;
@@ -202,6 +273,18 @@ impl Shared {
     /// Why the download stopped early, if it failed.
     pub fn error(&self) -> Option<String> {
         self.inner.lock().unwrap().error.clone()
+    }
+
+    /// The download failed on HTTP 403s that fresh URLs didn't get past.
+    pub fn refused(&self) -> bool {
+        self.inner.lock().unwrap().refused
+    }
+
+    /// A block a reader may need now is still to come (a windowed file counts only its
+    /// window): downloads in the background make way for it.
+    pub fn filling(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        !inner.cancelled && inner.error.is_none() && (0..inner.limit).any(|i| inner.blocks[i].is_none() && inner.in_window(i))
     }
 
     /// Stop downloading (e.g. a prefetch that was superseded).
@@ -256,26 +339,33 @@ impl Shared {
                 }
             }
         }
+        drop(inner);
+        // Woken readers re-lock at once; holding the guard through the wake would hand
+        // them the lock to take all over again — and one of them is the audio callback.
         self.ready.notify_all();
     }
 
-    fn fail(&self, err: String) {
+    fn fail(&self, err: String, refused: bool) {
         log::error!("download failed: {err}");
         FAIL_FROM.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
-        self.inner.lock().unwrap().error = Some(err);
+        let mut inner = self.inner.lock().unwrap();
+        inner.error = Some(err);
+        inner.refused = refused;
+        drop(inner);
         self.ready.notify_all();
     }
 
     fn range(&self, idx: usize) -> (u64, u64) {
-        let start = idx as u64 * BLOCK;
-        (start, (start + BLOCK).min(self.total) - 1)
+        (block_start(idx), block_start(idx + 1).min(self.total) - 1)
     }
 }
 
-/// The current URL plus how many times it has been replaced.
+/// The current URLs plus how many times they have been replaced.
 struct UrlSlot {
-    url: tokio::sync::Mutex<(String, u32)>,
+    url: tokio::sync::Mutex<(Media, u32)>,
     refresh: Option<Refresh>,
+    /// Segments the buffer has: fresh ones must be the same.
+    segments: Option<usize>,
 }
 
 impl UrlSlot {
@@ -285,11 +375,24 @@ impl UrlSlot {
         if slot.1 != seen {
             return true; // another worker already refreshed it
         }
-        let Some(refresh) = self.refresh.as_ref().filter(|_| slot.1 < MAX_REFRESHES) else { return false };
+        let Some(refresh) = self.refresh.as_ref() else { return false };
+        if slot.1 >= MAX_REFRESHES {
+            log::warn!("stream URL still refused after {MAX_REFRESHES} refreshes");
+            return false;
+        }
         match refresh().await {
-            Ok(url) => {
+            // The buffer is laid out for the stream it started with.
+            Ok(Media::Segments(urls)) if Some(urls.len()) != self.segments => {
+                log::warn!("stream URL refresh: {} segments for a buffer of {:?}", urls.len(), self.segments);
+                false
+            }
+            Ok(Media::File(_) | Media::Feed(_)) if self.segments.is_some() => {
+                log::warn!("stream URL refresh: a file for a segmented buffer");
+                false
+            }
+            Ok(media) => {
                 log::info!("stream URL refreshed after 403");
-                *slot = (url, slot.1 + 1);
+                *slot = (media, slot.1 + 1);
                 true
             }
             Err(e) => {
@@ -302,19 +405,36 @@ impl UrlSlot {
 
 /// Download into `shared` with parallel range requests; returns when complete,
 /// failed, or every reader was dropped.
-pub async fn download(http: reqwest::Client, url: String, ua: String, shared: Arc<Shared>, refresh: Option<Refresh>, ranging: Ranging) {
+pub async fn download(http: reqwest::Client, media: Media, ua: String, shared: Arc<Shared>, refresh: Option<Refresh>, ranging: Ranging) {
+    download_behind(http, media, ua, shared, refresh, ranging, None).await;
+}
+
+/// The buffer a background download makes way for (the playing song's), if any.
+pub type Ahead = Arc<dyn Fn() -> Option<Arc<Shared>> + Send + Sync>;
+
+/// `download`, but before each block it waits while `ahead`'s buffer still has blocks
+/// to come that a reader may need: the playing song gets the bandwidth first.
+pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, shared: Arc<Shared>, refresh: Option<Refresh>, ranging: Ranging, ahead: Option<Ahead>) {
     // Addon servers may ignore ranges and answer 200 with the whole file: then one
     // sequential download fills the buffer, rather than every worker pulling the file.
-    if ranging == Ranging::Header && !ranges_supported(&http, &url, &ua).await {
-        download_whole(&http, &url, &ua, &shared).await;
-        return;
+    if let Media::File(url) = &media {
+        if ranging == Ranging::Header && !ranges_supported(&http, url, &ua).await {
+            download_whole(&http, url, &ua, &shared).await;
+            return;
+        }
     }
-    let slot = Arc::new(UrlSlot { url: tokio::sync::Mutex::new((url, 0)), refresh });
+    let segments = shared.segments.as_ref().map(|s| s.len());
+    let slot = Arc::new(UrlSlot { url: tokio::sync::Mutex::new((media, 0)), refresh, segments });
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..WORKERS {
-        let (http, ua, shared, slot) = (http.clone(), ua.clone(), shared.clone(), slot.clone());
+        let (http, ua, shared, slot, ahead) = (http.clone(), ua.clone(), shared.clone(), slot.clone(), ahead.clone());
         set.spawn(async move {
             loop {
+                if let Some(ahead) = &ahead {
+                    while ahead().is_some_and(|s| !Arc::ptr_eq(&s, &shared) && s.filling()) {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                }
                 // Registered before claiming, so a change in between isn't missed.
                 let changed = shared.changed.notified();
                 tokio::pin!(changed);
@@ -327,19 +447,33 @@ pub async fn download(http: reqwest::Client, url: String, ua: String, shared: Ar
                     }
                     Claim::Done => break,
                 };
-                let (a, b) = shared.range(idx);
+                let (a, b) = if segments.is_none() { shared.range(idx) } else { (0, 0) };
+                let what = if segments.is_some() { format!("segment {idx}") } else { format!("range {a}-{b}") };
                 let mut attempt = 0;
                 loop {
-                    let (url, version) = slot.url.lock().await.clone();
+                    let (url, expect, version) = {
+                        let slot = slot.url.lock().await;
+                        match &slot.0 {
+                            // The range rides the URL for YouTube's players (Query); addon
+                            // servers take it as a header (Header) and keep a clean URL.
+                            Media::File(url) => (if ranging == Ranging::Query { format!("{url}&range={a}-{b}") } else { url.clone() }, Some(b - a + 1), slot.1),
+                            // A podcast feed's file: its own server, ranges as a header.
+                            Media::Feed(url) => (url.clone(), Some(b - a + 1), slot.1),
+                            Media::Segments(urls) => (urls[idx].clone(), None, slot.1),
+                        }
+                    };
                     // A refreshed URL is tied to the address that resolved it, which is the
                     // current shared client's (a proxy may have switched exits since).
                     let client = if version > 0 { crate::proxy::http() } else { http.clone() };
                     let res = if idx >= FAIL_FROM.load(std::sync::atomic::Ordering::Relaxed) {
                         Err(anyhow::anyhow!("simulated network failure"))
+                    } else if segments.is_none() && idx >= REFUSE_FROM.load(std::sync::atomic::Ordering::Relaxed) {
+                        Err(anyhow::Error::new(SimulatedRefusal))
                     } else {
                         match ranging {
-                            Ranging::Query => fetch(&client, &format!("{url}&range={a}-{b}"), &ua, b - a + 1).await,
-                            Ranging::Header => fetch_range(&client, &url, &ua, a, b, shared.total).await,
+                            Ranging::Query if segments.is_none() => fetch(&client, &url, &ua, expect).await,
+                            Ranging::Header if segments.is_none() => fetch_range(&client, &url, &ua, a, b, shared.total).await,
+                            _ => fetch(&client, &url, &ua, None).await,
                         }
                     };
                     match res {
@@ -355,11 +489,11 @@ pub async fn download(http: reqwest::Client, url: String, ua: String, shared: Ar
                             attempt += 1;
                             let (delay_ms, is_403) = if is_forbidden(&e) {
                                 let ms = (400 * (attempt * attempt) as u64).max(800);
-                                log::warn!("range {a}-{b}: HTTP 403 Forbidden; retrying with backoff ({ms} ms, attempt {attempt}/{RETRIES})");
+                                log::warn!("{what}: HTTP 403 Forbidden; retrying with backoff ({ms} ms, attempt {attempt}/{RETRIES})");
                                 (ms, true)
                             } else {
                                 let ms = 400 * (attempt * attempt) as u64;
-                                log::warn!("range {a}-{b}: {e:#} (retry {attempt}/{RETRIES})");
+                                log::warn!("{what}: {e:#} (retry {attempt}/{RETRIES})");
                                 (ms, false)
                             };
                             let sleep = tokio::time::sleep(Duration::from_millis(delay_ms));
@@ -384,7 +518,12 @@ pub async fn download(http: reqwest::Client, url: String, ua: String, shared: Ar
                             if shared.is_stopped() {
                                 return;
                             }
-                            shared.fail(format!("range {a}-{b}: {e:#}"));
+                            // How many fresh URLs were tried tells a URL that keeps being
+                            // refused (the player's URLs, the address) from a one-off.
+                            let refreshed = slot.url.lock().await.1;
+                            let refused = is_forbidden(&e);
+                            let tail = if refused { format!(" after {refreshed} URL refresh(es)") } else { String::new() };
+                            shared.fail(format!("{what}: {e:#}{tail}"), refused);
                             return;
                         }
                     }
@@ -397,22 +536,63 @@ pub async fn download(http: reqwest::Client, url: String, ua: String, shared: Ar
 }
 
 fn is_forbidden(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<reqwest::Error>()
-        .and_then(reqwest::Error::status)
-        .is_some_and(|s| s == reqwest::StatusCode::FORBIDDEN)
+    e.is::<SimulatedRefusal>()
+        || e.downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+            .is_some_and(|s| s == reqwest::StatusCode::FORBIDDEN)
 }
+
+/// `YTM_STREAM_REFUSE`'s answer: what googlevideo says to a range it won't serve.
+#[derive(Debug)]
+struct SimulatedRefusal;
+
+impl std::fmt::Display for SimulatedRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP status client error (403 Forbidden) (simulated)")
+    }
+}
+
+impl std::error::Error for SimulatedRefusal {}
 
 /// Dev hook: YTM_STREAM_FAIL=<block> makes the first download fail from that block on,
 /// as if the connection died mid-song; later downloads work.
 static FAIL_FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
 
+/// Dev hook: YTM_STREAM_REFUSE=<block> answers every file stream's ranges from that
+/// block on with HTTP 403, fresh URLs too, as YouTube does past 1 MiB (in block 4) where
+/// it wants a PO token for the visionOS player's URLs. HLS segments get through.
+static REFUSE_FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
 pub fn init_dev_hooks() {
     if let Some(b) = std::env::var("YTM_STREAM_FAIL").ok().and_then(|v| v.parse().ok()) {
         FAIL_FROM.store(b, std::sync::atomic::Ordering::Relaxed);
     }
+    if let Some(b) = std::env::var("YTM_STREAM_REFUSE").ok().and_then(|v| v.parse().ok()) {
+        REFUSE_FROM.store(b, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
-async fn fetch(http: &reqwest::Client, url: &str, ua: &str, expect: u64) -> anyhow::Result<Bytes> {
+/// Where a podcast feed's file ends up after its redirects (trackers, mostly), and its
+/// size: asked with a one-byte range, which also shows the server serves ranges.
+pub async fn probe_feed(http: &reqwest::Client, url: &str, ua: &str) -> anyhow::Result<(String, u64)> {
+    let resp = tokio::time::timeout(STALL, http.get(url).header("User-Agent", ua).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").send())
+        .await
+        .map_err(|_| anyhow::anyhow!("the podcast's server didn't answer"))?
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(reqwest::Error::without_url)?;
+    anyhow::ensure!(resp.status() == reqwest::StatusCode::PARTIAL_CONTENT, "the podcast's server doesn't serve ranges ({})", resp.status());
+    let total = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit_once('/'))
+        .and_then(|(_, t)| t.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("the podcast's server didn't give the file's size"))?;
+    Ok((resp.url().to_string(), total))
+}
+
+/// `expect`: the exact length a range must come back with (a segment's isn't known).
+async fn fetch(http: &reqwest::Client, url: &str, ua: &str, expect: Option<u64>) -> anyhow::Result<Bytes> {
     let stalled = || anyhow::anyhow!("no data for {} s", STALL.as_secs());
     // Errors leave the URL out: it carries the client's IP address and signatures (logs).
     let mut resp = tokio::time::timeout(STALL, http.get(url).header("User-Agent", ua).send())
@@ -420,11 +600,13 @@ async fn fetch(http: &reqwest::Client, url: &str, ua: &str, expect: u64) -> anyh
         .map_err(|_| stalled())?
         .and_then(reqwest::Response::error_for_status)
         .map_err(reqwest::Error::without_url)?;
-    let mut buf = bytes::BytesMut::with_capacity(expect as usize);
+    let mut buf = bytes::BytesMut::with_capacity(expect.or(resp.content_length()).unwrap_or(0) as usize);
     while let Some(chunk) = tokio::time::timeout(STALL, resp.chunk()).await.map_err(|_| stalled())?.map_err(reqwest::Error::without_url)? {
         buf.extend_from_slice(&chunk);
     }
-    anyhow::ensure!(buf.len() as u64 == expect, "short read: {} of {expect} bytes", buf.len());
+    if let Some(expect) = expect {
+        anyhow::ensure!(buf.len() as u64 == expect, "short read: {} of {expect} bytes", buf.len());
+    }
     Ok(buf.freeze())
 }
 
@@ -480,15 +662,19 @@ async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Ar
         .map_err(|_| stalled())?
         .and_then(reqwest::Response::error_for_status)
         .map_err(reqwest::Error::without_url)?;
-        let block = BLOCK as usize;
         let blocks = shared.inner.lock().unwrap().blocks.len();
-        let mut buf = bytes::BytesMut::with_capacity(block);
+        // The first block is smaller than the rest (see `FIRST`).
+        let lens: Vec<usize> = (0..blocks).map(|i| {
+            let (a, b) = shared.range(i);
+            (b - a + 1) as usize
+        }).collect();
+        let mut buf = bytes::BytesMut::with_capacity(BLOCK as usize);
         let (mut idx, mut received) = (0usize, 0u64);
         while let Some(chunk) = tokio::time::timeout(STALL, resp.chunk()).await.map_err(|_| stalled())?.map_err(reqwest::Error::without_url)? {
             received += chunk.len() as u64;
             buf.extend_from_slice(&chunk);
-            while buf.len() >= block && idx < blocks {
-                shared.put(idx, buf.split_to(block).freeze());
+            while idx < blocks && buf.len() >= lens[idx] {
+                shared.put(idx, buf.split_to(lens[idx]).freeze());
                 idx += 1;
             }
             if shared.inner.lock().unwrap().cancelled {
@@ -496,8 +682,9 @@ async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Ar
             }
         }
         anyhow::ensure!(received == shared.total, "short read: {received} of {} bytes", shared.total);
-        if idx < blocks {
-            shared.put(idx, buf.split().freeze());
+        while idx < blocks {
+            shared.put(idx, buf.split_to(lens[idx]).freeze());
+            idx += 1;
         }
         anyhow::Ok(())
     }
@@ -508,7 +695,7 @@ async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Ar
         }
         Err(e) => {
             if !shared.inner.lock().unwrap().cancelled {
-                shared.fail(format!("stream: {e:#}"));
+                shared.fail(format!("stream: {e:#}"), false);
             }
         }
     }
@@ -550,12 +737,9 @@ impl Drop for StreamReader {
     }
 }
 
-impl Read for StreamReader {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        if out.is_empty() || self.pos >= self.shared.total {
-            return Ok(0);
-        }
-        let idx = (self.pos / BLOCK) as usize;
+impl StreamReader {
+    /// Block `idx`, once it's here; an error if the download failed or stopped first.
+    pub fn block_at(&mut self, idx: usize) -> io::Result<Bytes> {
         let mut inner = self.shared.inner.lock().unwrap();
         inner.want = idx;
         if idx != self.block {
@@ -567,7 +751,10 @@ impl Read for StreamReader {
                 self.shared.changed.notify_waiters();
             }
         }
-        while inner.blocks[idx].is_none() {
+        loop {
+            if let Some(b) = &inner.blocks[idx] {
+                return Ok(b.clone());
+            }
             if let Some(e) = &inner.error {
                 return Err(io::Error::other(e.clone()));
             }
@@ -576,8 +763,17 @@ impl Read for StreamReader {
             }
             inner = self.shared.ready.wait(inner).unwrap();
         }
-        let block = inner.blocks[idx].as_ref().unwrap();
-        let off = (self.pos - idx as u64 * BLOCK) as usize;
+    }
+}
+
+impl Read for StreamReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() || self.pos >= self.shared.total {
+            return Ok(0);
+        }
+        let idx = block_of(self.pos);
+        let block = self.block_at(idx)?;
+        let off = (self.pos - block_start(idx)) as usize;
         let n = out.len().min(block.len() - off);
         out[..n].copy_from_slice(&block[off..off + n]);
         self.pos += n as u64;
@@ -606,7 +802,19 @@ impl Seek for StreamReader {
 /// download). Opus ones are always seekable: WebM's index is at the start. Raw PCM
 /// (decoded in-process, e.g. Dolby Atmos) plays straight from the buffer.
 pub fn decoder(shared: Arc<Shared>, seekable: bool) -> anyhow::Result<TrackDecoder> {
+    if let Some(starts) = shared.segments.clone() {
+        let duration_ms = shared.duration_ms;
+        return Ok(TrackDecoder::Hls(Box::new(crate::hls::HlsSource::new(StreamReader::new(shared), starts, duration_ms)?)));
+    }
     let size = shared.total;
+    // A feed's file is probed for what it is: MP3, or AAC in an MP4 whose index may
+    // follow the audio (only a seekable reader gets to it). Without a VBR header, an
+    // MP3's length is guessed from its first frames, and gapless trimming would cut
+    // whatever runs past the guess.
+    if shared.feed {
+        let builder = rodio::Decoder::builder().with_data(StreamReader::new(shared)).with_byte_len(size).with_seekable(true).with_coarse_seek(true).with_gapless(false);
+        return Ok(TrackDecoder::Rodio(builder.build()?));
+    }
     match shared.format {
         Format::Opus => {
             let duration_ms = shared.duration_ms;
@@ -694,6 +902,8 @@ pub enum TrackDecoder {
     /// Boxed: its decoder state is about 11 KB.
     Opus(Box<crate::opus::OpusSource>),
     Pcm(PcmSource),
+    /// AAC from HLS segments.
+    Hls(Box<crate::hls::HlsSource>),
 }
 
 impl Iterator for TrackDecoder {
@@ -704,6 +914,7 @@ impl Iterator for TrackDecoder {
             Self::Rodio(d) => d.next(),
             Self::Opus(d) => d.next(),
             Self::Pcm(d) => d.next(),
+            Self::Hls(d) => d.next(),
         }
     }
 }
@@ -714,6 +925,7 @@ impl rodio::Source for TrackDecoder {
             Self::Rodio(d) => d.current_span_len(),
             Self::Opus(d) => d.current_span_len(),
             Self::Pcm(d) => d.current_span_len(),
+            Self::Hls(d) => d.current_span_len(),
         }
     }
     fn channels(&self) -> rodio::ChannelCount {
@@ -721,6 +933,7 @@ impl rodio::Source for TrackDecoder {
             Self::Rodio(d) => d.channels(),
             Self::Opus(d) => d.channels(),
             Self::Pcm(d) => d.channels(),
+            Self::Hls(d) => d.channels(),
         }
     }
     fn sample_rate(&self) -> rodio::SampleRate {
@@ -728,6 +941,7 @@ impl rodio::Source for TrackDecoder {
             Self::Rodio(d) => d.sample_rate(),
             Self::Opus(d) => d.sample_rate(),
             Self::Pcm(d) => d.sample_rate(),
+            Self::Hls(d) => d.sample_rate(),
         }
     }
     fn total_duration(&self) -> Option<Duration> {
@@ -735,6 +949,7 @@ impl rodio::Source for TrackDecoder {
             Self::Rodio(d) => d.total_duration(),
             Self::Opus(d) => d.total_duration(),
             Self::Pcm(d) => d.total_duration(),
+            Self::Hls(d) => d.total_duration(),
         }
     }
     fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
@@ -742,6 +957,7 @@ impl rodio::Source for TrackDecoder {
             Self::Rodio(d) => d.try_seek(pos),
             Self::Opus(d) => d.try_seek(pos),
             Self::Pcm(d) => d.try_seek(pos),
+            Self::Hls(d) => d.try_seek(pos),
         }
     }
 }
@@ -752,37 +968,60 @@ pub struct PcmSource {
     rate: u32,
     channels: u16,
     duration: Option<Duration>,
+    /// PCM pulled from the reader at once: a sample at a time would take the buffer's
+    /// lock per sample, on the device's thread.
+    chunk: Box<[u8; CHUNK]>,
+    /// How much of `chunk` holds unread PCM.
+    len: usize,
+    at: usize,
 }
+
+/// Two spans of the resampler's view at stereo, and past that just a slice of a block.
+const CHUNK: usize = 8192;
 
 impl PcmSource {
     fn new(shared: Arc<Shared>, rate: u32, channels: u16) -> Self {
         let duration_ms = shared.duration_ms;
-        Self { reader: StreamReader::new(shared), rate, channels, duration: (duration_ms > 0).then(|| Duration::from_millis(duration_ms)) }
+        Self {
+            reader: StreamReader::new(shared),
+            rate,
+            channels,
+            duration: (duration_ms > 0).then(|| Duration::from_millis(duration_ms)),
+            chunk: Box::new([0; CHUNK]),
+            len: 0,
+            at: 0,
+        }
     }
 }
 
 impl Iterator for PcmSource {
     type Item = rodio::Sample;
     fn next(&mut self) -> Option<rodio::Sample> {
-        let mut buf = [0u8; 2];
-        if self.reader.read_exact(&mut buf).is_err() {
-            return None;
+        if self.at + 2 > self.len {
+            self.at = 0;
+            // A short read stops at a block boundary: a shorter chunk serves the next
+            // refill sooner. A trailing odd byte can't make a sample, and reading again
+            // past the end returns 0.
+            self.len = self.reader.read(&mut self.chunk[..]).ok()?;
+            if self.len == 0 {
+                return None;
+            }
         }
-        Some(i16::from_le_bytes(buf) as f32 / 32768.0)
+        let s = i16::from_le_bytes([self.chunk[self.at], self.chunk[self.at + 1]]);
+        self.at += 2;
+        Some(s as f32 / 32768.0)
     }
 }
 
 impl rodio::Source for PcmSource {
-    /// The samples left in the file, frame-aligned and `Some(0)` once it's read to the
-    /// end. Never `None`: rodio's `UniformSourceIterator` bootstraps its
-    /// `SampleRateConverter` with `Take { n: span }` and only re-reads the source's rate
-    /// and channel count when that `Take` runs out, so an unknown span freezes the
-    /// `from` rate for the whole player — the 44.1 kHz song after this one is then
-    /// resampled as if it were 48 kHz and plays about 9 % fast.
+    /// A finite span, as rodio's own decoders give per decoded packet. The resampler
+    /// around the player's queue reads the song's rate when a span ends, and a `None`
+    /// here freezes it: every song after a decoded-DASH one would then be converted
+    /// at this song's rate — a 44.1 kHz song after 48 kHz PCM plays 9 % fast, a
+    /// 96 kHz one an octave low.
     fn current_span_len(&self) -> Option<usize> {
-        let left = self.reader.shared.total.saturating_sub(self.reader.pos) as usize / 2;
         let ch = self.channels.max(1) as usize;
-        Some(left / ch * ch)
+        Some((4096 / ch) * ch)
     }
     fn channels(&self) -> rodio::ChannelCount { std::num::NonZeroU16::new(self.channels).unwrap_or(std::num::NonZeroU16::MIN) }
     fn sample_rate(&self) -> rodio::SampleRate { std::num::NonZeroU32::new(self.rate).unwrap_or(std::num::NonZeroU32::MIN) }
@@ -791,30 +1030,48 @@ impl rodio::Source for PcmSource {
         let frame = (pos.as_secs_f64() * self.rate as f64) as u64;
         let byte = frame * self.channels as u64 * 2;
         self.reader.seek(SeekFrom::Start(byte)).map_err(|e| rodio::source::SeekError::Other(std::sync::Arc::new(e)))?;
+        self.at = 0;
+        self.len = 0;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    /// The song queued after a PCM one is resampled at its own rate. `cargo test pcm_then_44k_rate`
-    #[test]
-    fn pcm_then_44k_rate() {
-        let nz16 = |n| std::num::NonZeroU16::new(n).unwrap();
-        let nz32 = |n| std::num::NonZeroU32::new(n).unwrap();
-        // A second of 48 kHz PCM stereo, ±8000 so it can't be mistaken for the ones below.
-        let mut pcm = Vec::with_capacity(48_000 * 2 * 2);
-        for _ in 0..48_000 {
-            pcm.extend_from_slice(&8_000i16.to_le_bytes());
-            pcm.extend_from_slice(&(-8_000i16).to_le_bytes());
-        }
-        let shared = super::Shared::from_bytes_with_format(pcm, 1_000, None, super::Format::Pcm { rate: 48_000, channels: 2 }, None);
-        let (tx, rx) = rodio::queue::queue(false);
-        tx.append(super::decoder(shared, true).unwrap());
-        // One second of 44.1 kHz, all ones.
-        tx.append(rodio::buffer::SamplesBuffer::new(nz16(2), nz32(44_100), vec![1.0f32; 44_100 * 2]));
-        let out: Vec<f32> = rodio::source::UniformSourceIterator::new(rx, nz16(2), nz32(48_000)).collect();
-        let second = out.iter().skip(48_000 * 2).filter(|&&x| (x - 1.0).abs() < 1e-3).count() / 2;
-        assert!((second as i64 - 48_000).abs() < 200, "the 44.1 kHz song came out as {second} frames, not 48000");
+    use std::time::{Duration, Instant};
+
+    use rodio::Source;
+
+    /// A real podcast's newest episode played the way an RSS episode is: found past its
+    /// tracking redirects, downloaded in `Range` requests, decoded as MP3, seeked.
+    /// `cargo test --release -- --ignored feed_file_live --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn feed_file_live() {
+        let (http, ua) = (reqwest::Client::new(), crate::webmusic::UA);
+        let rss = http.get("https://feeds.npr.org/510289/podcast.xml").header("User-Agent", ua).send().await.unwrap().text().await.unwrap();
+        let tag = &rss[rss.find("<enclosure").unwrap()..];
+        let url = tag[tag.find(" url=\"").unwrap() + 6..].split('"').next().unwrap().replace("&amp;", "&");
+        let (file, size) = super::probe_feed(&http, &url, ua).await.unwrap();
+        println!("{url}\n  -> {file}: {size} bytes");
+        let shared = super::Shared::feed(size, 0, false);
+        let t = Instant::now();
+        super::download(http, super::Media::Feed(file), ua.to_owned(), shared.clone(), None, super::Ranging::Header).await;
+        assert!(shared.error().is_none(), "{:?}", shared.error());
+        println!("  downloaded in {:?}", t.elapsed());
+        let mut d = super::decoder(shared.clone(), true).unwrap();
+        let (ch, rate) = (d.channels().get() as usize, d.sample_rate().get() as usize);
+        let secs = d.by_ref().count() as f64 / (ch * rate) as f64;
+        println!("  {ch} ch {rate} Hz, {secs:.1} s");
+        assert!(secs > 60.0, "too short: {secs} s");
+        let mut d = super::decoder(shared, true).unwrap();
+        let half = Duration::from_secs_f64(secs / 2.0);
+        let t = Instant::now();
+        d.try_seek(half).unwrap();
+        println!("  seek to {:.1} s took {:?}", half.as_secs_f64(), t.elapsed());
+        let left = d.count() as f64 / (ch * rate) as f64;
+        println!("  {left:.1} s left");
+        // Coarse: an estimate from the bitrate.
+        assert!((left - (secs - half.as_secs_f64())).abs() < 5.0, "seek off");
     }
 }

@@ -1,70 +1,110 @@
-//! BitChord party deep links: `bitchord://party/CODE` and the invite page
-//! `https://bitchord.kushagrasingh.in/invite/CODE` (a relay typed in Settings replaces the
-//! host and carries its own address in `?server=`).
+//! Jam deep links: `ytm-rs://jam/CODE` and `https://grapedjuice.github.io/ytm-rs/jam/?c=CODE`,
+//! and the single-instance hand-off built on the same channel.
 //!
-//! Clicking a link launches a new process with the URL as its argument. If another
-//! instance is already running, the new one hands the link over a named pipe and
-//! exits; the running instance queues it here and wakes the UI, which drains the
-//! queue with `take()` (the same pattern as `tray.rs`).
+//! Clicking a link (or the app's own shortcut, while a copy is already running) starts a
+//! new process. [`claim`] runs before anything slow: the first instance takes the
+//! per-user pipe (Windows) or Unix socket and serves it; any later one finds it taken,
+//! hands over its message and exits, and the running copy brings its window up. The
+//! channel is claimed within milliseconds of the process starting, so double-launching
+//! the shortcut can no longer open a second window: the second launch waits for the
+//! first one's channel and hands itself over. Invites queue in `PENDING` and the window
+//! request in `SHOW`; the UI drains them with `take()`/`take_show()` (the same pattern
+//! as `tray.rs`), woken through the callback `set_wake` installs once the context exists.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::jam::normalize_code as normalize;
 
-/// A link: the party to join and, for a relay other than BitChord's, where that relay is.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Link {
-    pub code: String,
-    pub server: Option<String>,
-}
-
-impl Link {
-    /// The custom-scheme form, which is also what one instance sends another over the pipe.
-    pub fn url(&self) -> String {
-        match &self.server {
-            Some(s) => format!("bitchord://party/{}?server={}", self.code, encode(s)),
-            None => format!("bitchord://party/{}", self.code),
-        }
-    }
-}
-
-static PENDING: Mutex<Vec<Link>> = Mutex::new(Vec::new());
+static PENDING: Mutex<Vec<Invite>> = Mutex::new(Vec::new());
 /// A plain later launch asked for the window (see `forward_show`).
 static SHOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// What a plain later launch sends instead of a link.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// Wakes the UI for what a later launch handed over; set once the context exists.
+static WAKE: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+/// What a plain later launch sends instead of a code.
 const SHOW_MSG: &str = "show";
 /// The updater's relaunch passes this: the old copy may still be exiting, so don't hand over to it.
 pub const RELAUNCH_FLAG: &str = "--relaunch";
+/// Ask a running copy to bring its window up: `--show`. A plain launch already does
+/// this, but the flag says so explicitly — and when nothing is running, the app just
+/// starts as usual with its window up. Recovery path for a window hidden behind a
+/// tray icon the shell never drew (taskbar replacements can do that).
+pub const SHOW_FLAG: &str = "--show";
+/// Run with "Close to tray" off for this session, so × quits for real: `--no-tray`.
+pub const NO_TRAY_FLAG: &str = "--no-tray";
 
-/// The party in a launch argument, if it is a link. Accepted shapes:
-/// `bitchord://party/CODE`, `bitchord://party?code=CODE` and `…/invite/CODE` over http(s),
-/// each optionally carrying `?server=<relay>`.
-pub fn parse(arg: &str) -> Option<Link> {
+/// Who holds the hand-off channel after [`claim`].
+#[derive(Clone, Copy, PartialEq)]
+pub enum Claim {
+    /// This launch took it, and serves it.
+    First,
+    /// Another copy holds it (or is starting up and will): hand over, or take it over
+    /// if that copy proves to be gone.
+    Busy,
+}
+
+impl Claim {
+    pub fn busy(self) -> bool {
+        self == Claim::Busy
+    }
+}
+
+/// What a launch argument (or a hand-off message) asked for: a relay jam room, or
+/// a Listen Together party (with the custom server its invite names).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Invite {
+    Jam(String),
+    Party(String, Option<String>),
+}
+
+impl Invite {
+    /// Over the hand-off channel: a plain code, or a `party:CODE[|server]` line.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Jam(code) => code.clone(),
+            Self::Party(code, None) => format!("party:{code}"),
+            Self::Party(code, Some(server)) => format!("party:{code}|{server}"),
+        }
+    }
+
+    fn from_message(msg: &str) -> Option<Self> {
+        if let Some(rest) = msg.strip_prefix("party:") {
+            let (code, server) = rest.split_once('|').map(|(c, s)| (c, Some(s))).unwrap_or((rest, None));
+            return crate::party::clean_code(code).map(|code| Self::Party(code, server.map(str::to_owned)));
+        }
+        crate::jam::normalize_code(msg).map(Self::Jam)
+    }
+}
+
+/// What a launch argument names, if it is a room link:
+/// `ytm-rs://jam/CODE[/]` (any case) or the jam share link with `?c=CODE` for a jam,
+/// `bitchord://party/CODE` or an `/invite/<CODE>` link for a party.
+pub fn parse(arg: &str) -> Option<Invite> {
     let arg = arg.trim().trim_matches('"');
     let (scheme, rest) = arg.split_once("://")?;
     let rest = rest.split('#').next().unwrap_or("");
-    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
-    let server = query_param(query, "server")
-        .map(decode)
-        .map(|s| s.trim().trim_end_matches('/').to_owned())
-        .filter(|s| !s.is_empty());
-    if scheme.eq_ignore_ascii_case("bitchord") {
-        // `party/CODE`, `party/CODE/`, or `party?code=CODE`.
+    if scheme.eq_ignore_ascii_case("ytm-rs") {
+        // `jam/CODE`, `jam/CODE/`, or `jam/?c=CODE`.
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
         let path = path.trim_end_matches('/');
         let (host, code) = path.split_once('/').unwrap_or((path, ""));
-        if !host.eq_ignore_ascii_case("party") || code.contains('/') {
+        if !host.eq_ignore_ascii_case("jam") {
             return None;
         }
-        let code = if code.is_empty() { query_param(query, "code").unwrap_or_default() } else { code };
-        return normalize(code).map(|code| Link { code, server });
+        if !code.is_empty() {
+            return normalize(code).map(Invite::Jam);
+        }
+        return query_param(query, "c").and_then(normalize).map(Invite::Jam);
     }
-    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
-        // The invite page: `…/invite/CODE`, in any case, with or without an index.
+    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("bitchord") {
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
         let lower = path.to_ascii_lowercase();
-        let lower = lower.trim_end_matches('/').trim_end_matches("/index.html");
-        let code = lower.rsplit('/').next().filter(|_| lower.contains("/invite/"))?;
-        return normalize(code).map(|code| Link { code, server });
+        let path = lower.trim_end_matches('/').trim_end_matches("/index.html");
+        if path == "grapedjuice.github.io/ytm-rs/jam" {
+            return query_param(query, "c").and_then(normalize).map(Invite::Jam);
+        }
+        // A Listen Together invite: `…/invite/<CODE>` on the origin that hosts it,
+        // or `bitchord://party/CODE`, with the custom server it names, if any.
+        return crate::party::parse_invite(arg).map(|(code, server)| Invite::Party(code, server));
     }
     None
 }
@@ -72,58 +112,22 @@ pub fn parse(arg: &str) -> Option<Link> {
 fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
     query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        (k.eq_ignore_ascii_case(name)).then_some(v)
+        (k == name).then_some(v)
     })
 }
 
-/// Percent-encoding, just enough for a URL inside a query parameter.
-fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(*b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-fn decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    /// The byte `%XX` at `i` stands for, if it is one.
-    fn hex(bytes: &[u8], i: usize) -> Option<u8> {
-        let esc = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
-        u8::from_str_radix(esc, 16).ok()
-    }
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match (bytes[i], if i + 2 < bytes.len() { hex(bytes, i) } else { None }) {
-            (b'%', Some(b)) => {
-                out.push(b);
-                i += 3;
-            }
-            _ => {
-                out.push(bytes[i]);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// The first party link among the process arguments.
-pub fn from_args() -> Option<Link> {
+/// The first room link among the process arguments.
+pub fn from_args() -> Option<Invite> {
     std::env::args_os().skip(1).find_map(|a| parse(&a.to_string_lossy()))
 }
 
-/// Queue a link for the UI (e.g. from the launch arguments).
-pub fn push(link: Link) {
-    PENDING.lock().unwrap().push(link);
+/// Queue an invite for the UI (e.g. from the launch arguments).
+pub fn push(invite: Invite) {
+    PENDING.lock().unwrap().push(invite);
 }
 
-/// Links received since the last call, oldest first.
-pub fn take() -> Vec<Link> {
+/// Invites received since the last call, oldest first.
+pub fn take() -> Vec<Invite> {
     std::mem::take(&mut *PENDING.lock().unwrap())
 }
 
@@ -132,10 +136,22 @@ pub fn take_show() -> bool {
     SHOW.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A plain launch while another copy runs: bring that one's window up instead, so only
-/// one copy uses (and refreshes) the Google session. Two copies refreshing it apart
-/// leave one with old cookies, which Google treats as stolen and signs out. True if
-/// a running copy took it.
+/// Set the UI's wake-up, once the context exists: what a later launch handed over is
+/// only picked up on a pass, and a hidden window repaints rarely.
+pub fn set_wake(wake: Arc<dyn Fn() + Send + Sync>) {
+    *WAKE.lock().unwrap() = Some(wake);
+}
+
+fn wake() {
+    if let Some(w) = WAKE.lock().unwrap().as_ref() {
+        w();
+    }
+}
+
+/// A plain launch (or `--show`) while another copy runs: bring that one's window up
+/// instead, so only one copy uses (and refreshes) the Google session. Two copies
+/// refreshing it apart leave one with old cookies, which Google treats as stolen and
+/// signs out. True if a running copy took it.
 pub fn forward_show() -> bool {
     if std::env::args_os().any(|a| a == RELAUNCH_FLAG) {
         return false;
@@ -147,19 +163,19 @@ pub fn forward_show() -> bool {
         use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
         let _ = AllowSetForegroundWindow(ASFW_ANY);
     }
-    forward_to_running(SHOW_MSG)
+    forward(SHOW_MSG)
 }
 
-/// Per-user pipe name. A dev profile (`YTM_DATA_DIR`) gets its own, so test runs
+/// Per-user channel name. A dev profile (`YTM_DATA_DIR`) gets its own, so test runs
 /// never talk to the installed copy.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn pipe_name() -> String {
-    let user: String = std::env::var("USERNAME")
+fn channel_id() -> String {
+    let user: String = std::env::var(if cfg!(windows) { "USERNAME" } else { "USER" })
+        .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_default()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    let mut name = format!(r"\\.\pipe\bitchord-party-{user}");
+    let mut name = format!("ytm-rs-jam-{}", if user.is_empty() { "default".to_owned() } else { user });
     if let Some(dir) = std::env::var_os("YTM_DATA_DIR") {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -169,37 +185,297 @@ fn pipe_name() -> String {
     name
 }
 
-#[cfg(windows)]
-pub use win::{forward_to_running, listen, register_protocol};
-
-#[cfg(not(windows))]
-pub fn forward_to_running(_msg: &str) -> bool {
-    false
+/// Where the Unix socket lives: `$XDG_RUNTIME_DIR`, else a directory of our own in the
+/// temp dir. Empty or relative counts as unset: either would put the socket in the
+/// working directory. (`has_root` is the same as absolute on Unix, and testable on Windows.)
+#[cfg_attr(windows, allow(dead_code))]
+fn runtime_dir(xdg: Option<std::ffi::OsString>, tmp: &std::path::Path, uid: u32) -> std::path::PathBuf {
+    match xdg.map(std::path::PathBuf::from) {
+        Some(dir) if dir.has_root() => dir,
+        _ => tmp.join(format!("bitchord-{uid}")),
+    }
 }
 
 #[cfg(not(windows))]
-pub fn listen(_wake: impl Fn() + Send + 'static) {}
+mod unix {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+
+    use super::channel_id;
+
+    /// The socket's directory, or None if it isn't this user's alone. Anyone can create
+    /// files in `/tmp`: a socket another user put there would take our launches (and
+    /// invites), and the app would never open.
+    fn dir() -> Option<PathBuf> {
+        let uid = unsafe { libc::getuid() };
+        let dir = super::runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"), &std::env::temp_dir(), uid);
+        // The temp-dir fallback may not exist yet. If it does, the check below decides.
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+        match private_dir(&dir, uid) {
+            Ok(()) => Some(dir),
+            Err(e) => {
+                log::warn!("single-instance socket: {}: {e}", dir.display());
+                None
+            }
+        }
+    }
+
+    /// A real directory (not a link) owned by `uid`, that no one else can get into.
+    pub(super) fn private_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+            return Err(std::io::Error::other("not a private directory of this user"));
+        }
+        Ok(())
+    }
+
+    /// The socket and its lock file in `dir`.
+    pub(super) fn paths(dir: &Path) -> (PathBuf, PathBuf) {
+        let name = channel_id();
+        (dir.join(format!("{name}.sock")), dir.join(format!("{name}.lock")))
+    }
+
+    /// Take the channel (bind and serve) or find it taken. The lock, not the socket
+    /// file, says who serves, and it goes with the process: a socket a crash left
+    /// behind is stale and is rebound, while a copy started alongside a live one
+    /// leaves that one's socket alone.
+    pub fn bind_and_serve() -> bool {
+        dir().is_some_and(|dir| listen_at(&dir))
+    }
+
+    /// True if this instance now serves the socket in `dir`.
+    pub(super) fn listen_at(dir: &Path) -> bool {
+        let (sock, lock) = paths(dir);
+        let lock = match std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(&lock) {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!("single-instance lock: {e}");
+                return false;
+            }
+        };
+        if let Err(e) = lock.try_lock() {
+            log::info!("single-instance socket not served by this instance: {e}");
+            return false;
+        }
+        let _ = std::fs::remove_file(&sock);
+        let listener = match UnixListener::bind(&sock) {
+            Ok(listener) => listener,
+            Err(e) => {
+                log::warn!("single-instance socket: {e}");
+                return false;
+            }
+        };
+        // A socket in a shared dir is only for its own user to write to.
+        let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
+        let spawned = std::thread::Builder::new().name("deeplink".into()).spawn(move || {
+            let _lock = lock;
+            serve(listener)
+        });
+        if let Err(e) = spawned {
+            log::warn!("single-instance listener: {e}");
+            return false;
+        }
+        true
+    }
+
+    /// Hand `msg` to whoever serves the socket in `dir`. True if one took it.
+    pub(super) fn forward_at(dir: &Path, msg: &str) -> bool {
+        match UnixStream::connect(paths(dir).0) {
+            Ok(mut stream) => stream.write_all(format!("{msg}\n").as_bytes()).and_then(|()| stream.flush()).is_ok(),
+            // Nobody is listening: no running copy, or a socket a crash left behind.
+            Err(_) => false,
+        }
+    }
+
+    /// Hand `msg` to whoever serves the socket. `tries`: short, for a holder that's
+    /// mid-exit; the channel exists as soon as the holder's process does.
+    pub fn try_forward(msg: &str, tries: usize) -> bool {
+        let Some(dir) = dir() else { return false };
+        for i in 0..tries {
+            if forward_at(&dir, msg) {
+                return true;
+            }
+            // The holder is up but its socket isn't accepting quite yet, or it just
+            // died: brief retries tell those apart from "nobody's there" poorly, so
+            // only a couple, and only past the first attempt.
+            if i + 1 < tries {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        false
+    }
+
+    /// A copy that died left its socket behind: take the channel over, if the holder
+    /// is really gone (its lock went with it). False when someone is serving after all.
+    pub fn take_over() -> bool {
+        dir().is_some_and(|dir| listen_at(&dir))
+    }
+
+    fn serve(listener: UnixListener) {
+        for stream in listener.incoming() {
+            let stream = match stream {
+                Ok(stream) => stream,
+                Err(e) => {
+                    log::warn!("single-instance socket: {e}");
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    continue;
+                }
+            };
+            // A client that connects and sends nothing mustn't hold up the next launch.
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            // One line per launch, capped like the Windows pipe.
+            let mut msg = String::new();
+            if let Err(e) = BufReader::new(stream.take(257)).read_line(&mut msg) {
+                log::warn!("single-instance socket: {e}");
+                continue;
+            }
+            super::received(msg.trim().to_owned());
+        }
+    }
+}
+
+/// What a hand-off channel delivered, once it's trimmed of its line ending: the window,
+/// or a room to join.
+fn received(msg: String) {
+    if msg == SHOW_MSG {
+        log::info!("another launch asked for the window");
+        SHOW.store(true, std::sync::atomic::Ordering::Relaxed);
+        wake();
+        return;
+    }
+    match Invite::from_message(&msg) {
+        Some(invite) => {
+            log::info!("room invite received from another launch: {invite:?}");
+            push(invite);
+            wake();
+        }
+        None => log::warn!("room link pipe: ignored an invalid message"),
+    }
+}
+
+/// Claim the hand-off channel, before anything slow: the first launch takes it and
+/// serves it from here on; a later one finds it taken and hands itself over (see
+/// `forward`/`forward_show`), falling back to [`take_over`] when the holder turns out
+/// to be gone. On Windows the channel is the per-user named pipe, taken exclusively
+/// with `FILE_FLAG_FIRST_PIPE_INSTANCE`; elsewhere, a Unix socket by the same idea.
+#[cfg(windows)]
+pub fn claim() -> Claim {
+    if win::serve_pipe() {
+        Claim::First
+    } else {
+        // The name is held by another copy; if it dies without a successor, a retry
+        // thread takes the pipe over (an updater relaunch does exactly this).
+        win::spawn_pipe_retry();
+        Claim::Busy
+    }
+}
 
 #[cfg(not(windows))]
-pub fn register_protocol() {}
+pub fn claim() -> Claim {
+    if unix::bind_and_serve() {
+        Claim::First
+    } else {
+        Claim::Busy
+    }
+}
+
+/// The holder never answered: it's gone (it may have crashed before claiming). Take
+/// the channel over for this launch, so the next one hands over to us. False when
+/// someone is serving after all.
+#[cfg(not(windows))]
+pub fn take_over() -> bool {
+    unix::take_over()
+}
+
+#[cfg(windows)]
+pub fn take_over() -> bool {
+    // The retry thread `claim` spawned does this on its own.
+    false
+}
+
+/// Hand `msg` (a jam code, or the window request) to the copy that serves the channel.
+/// True when one took it.
+#[cfg(windows)]
+pub fn forward(msg: &str) -> bool {
+    win::forward(msg)
+}
+
+#[cfg(not(windows))]
+pub fn forward(msg: &str) -> bool {
+    // A few tries: the holder's socket accepts as soon as its process starts, but a
+    // copy mid-exit may close it between our claim and this call.
+    unix::try_forward(msg, 4)
+}
 
 #[cfg(windows)]
 mod win {
     use std::io::Write;
 
-    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE};
     use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, ReadFile};
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
         PIPE_WAIT,
     };
-    use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
+    use windows::Win32::System::Registry::{HKEY, REG_SZ, RegSetKeyValueW};
     use windows::core::HSTRING;
 
-    use super::{pipe_name, push};
+    use super::received;
 
-    /// Hand `msg` (a link, or `show`) to a running instance. True if one took it.
-    pub fn forward_to_running(msg: &str) -> bool {
+    fn pipe_name() -> String {
+        format!(r"\\.\pipe\{}", super::channel_id())
+    }
+
+    /// Create the pipe, if the name is free, and serve it on a background thread.
+    pub fn serve_pipe() -> bool {
+        let Some(pipe) = create_pipe() else { return false };
+        spawn_serve(pipe);
+        true
+    }
+
+    /// Another copy holds the name: keep asking for it on a background thread, so this
+    /// copy becomes the server when the holder dies (an updater relaunch, or a crash).
+    pub fn spawn_pipe_retry() {
+        let spawned = std::thread::Builder::new().name("deeplink-takeover".into()).spawn(|| {
+            for _ in 0..60 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if let Some(pipe) = create_pipe() {
+                    log::info!("jam link pipe: taken over after the previous holder left");
+                    spawn_serve(pipe);
+                    return;
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("jam link takeover: {e}");
+        }
+    }
+
+    fn create_pipe() -> Option<Pipe> {
+        let handle = unsafe {
+            CreateNamedPipeW(
+                &HSTRING::from(pipe_name()),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                0,
+                512,
+                0,
+                None,
+            )
+        };
+        if handle.is_invalid() {
+            // ERROR_ACCESS_DENIED here means another instance already serves it.
+            log::info!("jam link pipe not served by this instance: {}", windows::core::Error::from_thread());
+            return None;
+        }
+        Some(Pipe(handle))
+    }
+
+    /// Hand `msg` to a running instance. True if one took it.
+    pub fn forward(msg: &str) -> bool {
         let name = pipe_name();
         // The server has one pipe instance; between clients it is briefly busy.
         for _ in 0..20 {
@@ -208,7 +484,7 @@ mod win {
                     return pipe.write_all(format!("{msg}\n").as_bytes()).and_then(|_| pipe.flush()).is_ok();
                 }
                 // ERROR_PIPE_BUSY: another client is mid-handoff.
-                Err(e) if e.raw_os_error() == Some(231) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32) => std::thread::sleep(std::time::Duration::from_millis(50)),
                 // No server (ERROR_FILE_NOT_FOUND) or anything else: nobody to hand to.
                 Err(_) => return false,
             }
@@ -227,42 +503,20 @@ mod win {
         }
     }
 
-    /// Serve the pipe on a background thread: each link received is queued and
-    /// `wake` called. Only the first instance gets the pipe; any later one (a plain
-    /// second launch) does nothing here.
-    pub fn listen(wake: impl Fn() + Send + 'static) {
-        let name = pipe_name();
-        let handle = unsafe {
-            CreateNamedPipeW(
-                &HSTRING::from(name.as_str()),
-                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                0,
-                512,
-                0,
-                None,
-            )
-        };
-        if handle.is_invalid() {
-            // ERROR_ACCESS_DENIED here means another instance already serves it.
-            log::info!("party link pipe not served by this instance: {}", windows::core::Error::from_thread());
-            return;
-        }
-        let pipe = Pipe(handle);
-        let spawned = std::thread::Builder::new().name("deeplink".into()).spawn(move || serve(pipe, wake));
+    fn spawn_serve(pipe: Pipe) {
+        let spawned = std::thread::Builder::new().name("deeplink".into()).spawn(move || serve(pipe));
         if let Err(e) = spawned {
-            log::warn!("party link listener: {e}");
+            log::warn!("jam link listener: {e}");
         }
     }
 
-    fn serve(pipe: Pipe, wake: impl Fn()) {
+    fn serve(pipe: Pipe) {
         loop {
             let connected = unsafe { ConnectNamedPipe(pipe.0, None) };
             if let Err(e) = connected {
                 // A client that connected between create/disconnect and this call.
                 if e.code() != ERROR_PIPE_CONNECTED.to_hresult() {
-                    log::warn!("party link pipe: {e}");
+                    log::warn!("jam link pipe: {e}");
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     continue;
                 }
@@ -283,37 +537,11 @@ mod win {
             unsafe {
                 let _ = DisconnectNamedPipe(pipe.0);
             }
-            let msg = String::from_utf8_lossy(&msg).trim().to_owned();
-            if msg == super::SHOW_MSG {
-                log::info!("another launch asked for the window");
-                super::SHOW.store(true, std::sync::atomic::Ordering::Relaxed);
-                wake();
-                continue;
-            }
-            match super::parse(&msg) {
-                Some(link) => {
-                    log::info!("party link received from another launch: {}", link.code);
-                    push(link);
-                    wake();
-                }
-                None => log::warn!("party link pipe: ignored an invalid message"),
-            }
+            received(String::from_utf8_lossy(&msg).trim().to_owned());
         }
     }
 
-    /// Register the `bitchord:` URL protocol for this user, pointing at this exe.
-    /// Call only from an installed copy, so dev builds don't take the protocol over.
-    pub fn register_protocol() {
-        match std::env::current_exe() {
-            Ok(exe) => {
-                if let Err(e) = register_at(HKEY_CURRENT_USER, r"Software\Classes\bitchord", &exe.to_string_lossy()) {
-                    log::warn!("registering the bitchord: protocol: {e}");
-                }
-            }
-            Err(e) => log::warn!("registering the bitchord: protocol: {e}"),
-        }
-    }
-
+    /// The registry writer for `ytm-rs:` and `bitchord:` links (see `register_protocol`).
     pub(super) fn register_at(root: HKEY, key: &str, exe: &str) -> windows::core::Result<()> {
         let set = |sub: &str, name: &str, value: &str| -> windows::core::Result<()> {
             let path = if sub.is_empty() { key.to_string() } else { format!(r"{key}\{sub}") };
@@ -331,12 +559,37 @@ mod win {
             }
             .ok()
         };
-        set("", "", "URL:bitchord Protocol")?;
+        set("", "", "URL:ytm-rs Protocol")?;
         set("", "URL Protocol", "")?;
         set("DefaultIcon", "", &format!("\"{exe}\",0"))?;
         set(r"shell\open\command", "", &format!("\"{exe}\" \"%1\""))
     }
 }
+
+/// Register the `ytm-rs:` and `bitchord:` URL protocols for this user, pointing at
+/// this exe. The party's invite links (`bitchord://party/CODE`) need the second.
+/// Call only from an installed copy, so dev builds don't take the protocol over.
+#[cfg(windows)]
+pub fn register_protocol() {
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let exe = exe.to_string_lossy();
+            if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\ytm-rs", &exe) {
+                log::warn!("registering the ytm-rs: protocol: {e}");
+            }
+            if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\bitchord", &exe) {
+                log::warn!("registering the bitchord: protocol: {e}");
+            }
+        }
+        Err(e) => log::warn!("registering the link protocols: {e}"),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn register_protocol() {}
+
+#[cfg(windows)]
+use windows::Win32::System::Registry::HKEY_CURRENT_USER;
 
 #[cfg(test)]
 mod tests {
@@ -344,45 +597,36 @@ mod tests {
 
     #[test]
     fn app_protocol() {
-        assert_eq!(parse("bitchord://party/ABC234"), Some(Link { code: "ABC234".into(), server: None }));
-        assert_eq!(parse("bitchord://party/abc234/"), Some(Link { code: "ABC234".into(), server: None }));
-        assert_eq!(parse("BITCHORD://PARTY/aBc234"), Some(Link { code: "ABC234".into(), server: None }));
-        assert_eq!(parse("\"bitchord://party/ABC234\""), Some(Link { code: "ABC234".into(), server: None }));
-        assert_eq!(parse("bitchord://party?code=xyz789"), Some(Link { code: "XYZ789".into(), server: None }));
-    }
-
-    #[test]
-    fn invite_pages() {
-        let code = |l: &Link| l.code.clone();
-        assert_eq!(code(&parse("https://bitchord.kushagrasingh.in/invite/ABC234").unwrap()), "ABC234");
-        assert_eq!(code(&parse("https://bitchord.kushagrasingh.in/invite/abc234?x=1").unwrap()), "ABC234");
-        assert_eq!(parse("https://bitchord.kushagrasingh.in/invite/abc234/#top").unwrap(), Link { code: "ABC234".into(), server: None });
-        // A code read off a phone may hold 0, 1 or a look-alike letter.
-        assert_eq!(code(&parse("https://bitchord.kushagrasingh.in/invite/AB0IL1").unwrap()), "AB0111");
-    }
-
-    #[test]
-    fn a_relay_other_than_bitchords() {
+        assert_eq!(parse("ytm-rs://jam/ABC234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("ytm-rs://jam/abc234/"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("YTM-RS://JAM/aBc234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("\"ytm-rs://jam/ABC234\""), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("ytm-rs://jam/?c=xyz789"), Some(Invite::Jam("XYZ789".into())));
+        // The relay's alphabet has 0 and 1; I, L and O are read as the digits they shadow.
+        assert_eq!(parse("ytm-rs://jam/ABC0I1"), Some(Invite::Jam("ABC011".into())));
+        assert_eq!(parse("ytm-rs://jam/ABCOIL"), Some(Invite::Jam("ABC011".into())));
+        assert_eq!(parse("bitchord://party/XYZ789"), Some(Invite::Party("XYZ789".into(), None)));
         assert_eq!(
-            parse("bitchord://party/ABC234?server=https%3A%2F%2Fapi.example.com%3A8443%2Fparty").unwrap(),
-            Link { code: "ABC234".into(), server: Some("https://api.example.com:8443/party".into()) }
+            parse("https://bitchord.kushagrasingh.in/invite/xyz789?server=party.example.com"),
+            Some(Invite::Party("XYZ789".into(), Some("https://party.example.com".into())))
         );
-        // The invite page a custom relay hands out names itself and its relay.
-        assert_eq!(
-            parse("https://example.com/invite/ABC234?server=api.example.com/").unwrap(),
-            Link { code: "ABC234".into(), server: Some("api.example.com".into()) }
-        );
-        assert_eq!(parse("bitchord://party/ABC234?server=").unwrap().server, None);
     }
 
     #[test]
-    fn a_link_survives_the_pipe() {
-        for link in [
-            Link { code: "ABC234".into(), server: None },
-            Link { code: "XY01P1".into(), server: Some("https://api.example.com/party".into()) },
-        ] {
-            assert_eq!(parse(&link.url()).as_ref(), Some(&link));
-        }
+    fn messages() {
+        assert_eq!(Invite::from_message("ABC234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(Invite::from_message("party:XYZ789"), Some(Invite::Party("XYZ789".into(), None)));
+        assert_eq!(Invite::Party("XYZ789".into(), Some("https://p.example.com".into())).message(), "party:XYZ789|https://p.example.com");
+        assert_eq!(Invite::from_message("party:XYZ789|https://p.example.com"), Some(Invite::Party("XYZ789".into(), Some("https://p.example.com".into()))));
+        assert_eq!(Invite::from_message("party:XYZ78"), None);
+        assert_eq!(Invite::from_message("nonsense"), None);
+    }
+
+    #[test]
+    fn share_link() {
+        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam/?c=ABC234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam?c=abc234"), Some(Invite::Jam("ABC234".into())));
+        assert_eq!(parse("https://grapedjuice.github.io/ytm-rs/jam/index.html?x=1&c=abc234#top"), Some(Invite::Jam("ABC234".into())));
     }
 
     #[test]
@@ -391,17 +635,15 @@ mod tests {
             "",
             "%1",
             "ABC234",
-            "bitchord://party/",
-            "bitchord://party/ABC23",      // too short
-            "bitchord://party/ABC2345",    // too long
-            "bitchord://party/ABC234/xyz", // extra path
-            "bitchord://room/ABC234",
-            "bitchord://party?code=ABC",
-            "https://example.com/invite/ABC2345",
-            "https://example.com/join/ABC234",
-            "https://bitchord.kushagrasingh.in/invite/",
-            "https://grapedjuice.github.io/ytm-rs/jam/?c=ABC234",
-            "ytm-rs://jam/ABC234",
+            "ytm-rs://jam/",
+            "ytm-rs://jam/ABC23",      // too short
+            "ytm-rs://jam/ABC2345",    // too long
+            "ytm-rs://jam/ÄBC234",     // non-ASCII falls away, and what's left is too short
+            "ytm-rs://jam/ABC234/xyz", // extra path
+            "ytm-rs://room/ABC234",
+            "https://example.com/ytm-rs/jam/?c=ABC234",
+            "https://grapedjuice.github.io/ytm-rs/?c=ABC234",
+            "https://grapedjuice.github.io/ytm-rs/jam/",
             "--login",
         ] {
             assert_eq!(parse(bad), None, "{bad}");
@@ -410,13 +652,73 @@ mod tests {
 
     #[test]
     fn queue() {
-        push(Link { code: "ABC234".into(), server: None });
-        push(Link { code: "XYZ789".into(), server: Some("api.example.com".into()) });
-        assert_eq!(
-            take(),
-            [Link { code: "ABC234".into(), server: None }, Link { code: "XYZ789".into(), server: Some("api.example.com".into()) }]
-        );
+        push(Invite::Jam("ABC234".into()));
+        push(Invite::Party("XYZ789".into(), None));
+        assert_eq!(take(), [Invite::Jam("ABC234".into()), Invite::Party("XYZ789".into(), None)]);
         assert!(take().is_empty());
+    }
+
+    #[test]
+    fn channel_name_is_per_user() {
+        let name = channel_id();
+        assert!(name.starts_with("ytm-rs-jam-"), "{name}");
+        // The Windows pipe form keeps its prefix; the Unix socket form is a plain name.
+        assert!(!name.contains('\\'));
+    }
+
+    #[test]
+    fn socket_dir() {
+        let tmp = std::path::Path::new("/tmp");
+        assert_eq!(runtime_dir(Some("/run/user/1000".into()), tmp, 1000), std::path::Path::new("/run/user/1000"));
+        // Unset, empty or relative: our own directory in the temp dir, never the working one.
+        for xdg in [None, Some("".into()), Some("run".into())] {
+            assert_eq!(runtime_dir(xdg, tmp, 1000), std::path::Path::new("/tmp/bitchord-1000"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn single_instance_socket() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        let dir = std::env::temp_dir().join(format!("bitchord-deeplink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let uid = unsafe { libc::getuid() };
+        let mode = |m| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(m)).unwrap();
+
+        // Only a directory of ours alone is trusted.
+        mode(0o755);
+        assert!(unix::private_dir(&dir, uid).is_err());
+        mode(0o700);
+        assert!(unix::private_dir(&dir, uid).is_ok());
+        assert!(unix::private_dir(&dir, uid.wrapping_add(1)).is_err());
+        let link = dir.with_extension("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(unix::private_dir(&link, uid).is_err());
+        std::fs::remove_file(&link).unwrap();
+
+        // A socket a crash left behind: nobody takes the launch, and the next copy serves.
+        let (sock, _) = unix::paths(&dir);
+        drop(UnixListener::bind(&sock).unwrap());
+        assert!(!unix::forward_at(&dir, SHOW_MSG));
+        assert!(unix::listen_at(&dir));
+        // A copy started alongside leaves the live socket alone.
+        assert!(!unix::listen_at(&dir));
+
+        // A client that connects and says nothing doesn't hold up the next launch.
+        let _silent = UnixStream::connect(&sock).unwrap();
+        assert!(unix::forward_at(&dir, SHOW_MSG));
+        let mut shown = false;
+        for _ in 0..100 {
+            if take_show() {
+                shown = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(shown, "the launch got through");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(windows)]
@@ -424,8 +726,10 @@ mod tests {
     fn register_under_scratch_key() {
         use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegDeleteTreeW, RegGetValueW};
         use windows::core::HSTRING;
-        let key = format!(r"Software\bitchord-deeplink-test-{}", std::process::id());
-        win::register_at(HKEY_CURRENT_USER, &key, r"C:\x\bitchord.exe").unwrap();
+        let key = format!(r"Software\ytm-rs-deeplink-test-{}", std::process::id());
+        // `register_at` lives in `mod win` (`pub(super)`): reachable from here only
+        // through the module path, not via `use super::*`.
+        win::register_at(HKEY_CURRENT_USER, &key, r"C:\x\ytm-rs.exe").unwrap();
         let read = |sub: &str, name: &str| -> String {
             let mut buf = [0u16; 256];
             let mut len = (buf.len() * 2) as u32;
@@ -449,9 +753,9 @@ mod tests {
             let _ = RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key.as_str()));
             let _ = windows::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER, &HSTRING::from(key.as_str()));
         }
-        assert_eq!(results.0, "URL:bitchord Protocol");
+        assert_eq!(results.0, "URL:ytm-rs Protocol");
         assert_eq!(results.1, "");
-        assert_eq!(results.2, r#""C:\x\bitchord.exe",0"#);
-        assert_eq!(results.3, r#""C:\x\bitchord.exe" "%1""#);
+        assert_eq!(results.2, r#""C:\x\ytm-rs.exe",0"#);
+        assert_eq!(results.3, r#""C:\x\ytm-rs.exe" "%1""#);
     }
 }

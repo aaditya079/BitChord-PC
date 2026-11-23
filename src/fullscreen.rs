@@ -36,6 +36,14 @@ pub fn work_area() -> Option<egui::Rect> {
     None
 }
 
+/// The refresh rate (Hz) of the monitor the window is on. None where the app can't ask.
+pub fn refresh_rate() -> Option<f64> {
+    #[cfg(windows)]
+    return imp::refresh_rate();
+    #[cfg(not(windows))]
+    None
+}
+
 /// Whether some of `rect` (physical pixels) is on a connected monitor. True where the
 /// app can't ask.
 pub fn on_a_monitor(rect: egui::Rect) -> bool {
@@ -56,27 +64,18 @@ pub fn set_rounded(radius: Option<f32>) {
     imp::rounded(radius);
 }
 
-/// Keep the window above the rest, or give that back. False where this platform (or a
-/// window handle not yet taken) leaves it to winit, so the caller sends the command instead.
-#[cfg_attr(not(windows), allow(unused_variables))]
-pub fn set_topmost(on: bool) -> bool {
-    #[cfg(windows)]
-    return imp::topmost(on);
-    #[cfg(not(windows))]
-    false
-}
-
 #[cfg(windows)]
 mod imp {
     use std::sync::{Mutex, OnceLock};
 
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
-        CreateRoundRectRgn, CreateSolidBrush, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect, MonitorFromWindow, RDW_ALLCHILDREN, RDW_ERASE,
-        RDW_FRAME, RDW_INVALIDATE, RedrawWindow, SetWindowRgn,
+        CreateRoundRectRgn, CreateSolidBrush, DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MONITORINFOEXW, MonitorFromRect,
+        MonitorFromWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RedrawWindow, SetWindowRgn,
     };
+    use windows::core::PCWSTR;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GCLP_HBRBACKGROUND, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, GetClientRect, GetWindowLongW, GetWindowPlacement, IsZoomed, SW_RESTORE, ShowWindow, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+        GCLP_HBRBACKGROUND, GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongW, GetWindowPlacement, IsZoomed, SW_RESTORE, ShowWindow, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetClassLongPtrW, SetWindowLongW, SetWindowPlacement, SetWindowPos, WINDOWPLACEMENT, WM_SETREDRAW, WS_CAPTION, WS_EX_CLIENTEDGE,
         WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_MAXIMIZE, WS_THICKFRAME,
     };
@@ -117,19 +116,24 @@ mod imp {
         })
     }
 
+    pub fn refresh_rate() -> Option<f64> {
+        let &h = WINDOW.get()?;
+        let mut info = MONITORINFOEXW { monitorInfo: MONITORINFO { cbSize: size_of::<MONITORINFOEXW>() as u32, ..Default::default() }, ..Default::default() };
+        let mut mode = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
+        // SAFETY: the app's own window; `info` and `mode` are ours and sized, and
+        // `szDevice` is a NUL-terminated name.
+        unsafe {
+            GetMonitorInfoW(MonitorFromWindow(HWND(h as *mut _), MONITOR_DEFAULTTONEAREST), (&raw mut info).cast()).ok().ok()?;
+            EnumDisplaySettingsW(PCWSTR(info.szDevice.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode).ok().ok()?;
+        }
+        // 0 and 1 mean the hardware's default rate, which says nothing.
+        (mode.dmDisplayFrequency > 1).then_some(mode.dmDisplayFrequency as f64)
+    }
+
     pub fn on_a_monitor(rect: egui::Rect) -> bool {
         let r = RECT { left: rect.left() as i32, top: rect.top() as i32, right: rect.right() as i32, bottom: rect.bottom() as i32 };
         // SAFETY: plain query.
         !unsafe { MonitorFromRect(&r, MONITOR_DEFAULTTONULL) }.is_invalid()
-    }
-
-    /// The strip's pin, straight to the window manager. winit posts its own change to the
-    /// window's thread (`SWP_ASYNCWINDOWPOS`) and can leave it unapplied while another app
-    /// is being raised; this one has landed before it returns.
-    pub fn topmost(on: bool) -> bool {
-        let Some(&h) = WINDOW.get() else { return false };
-        // SAFETY: the app's own window; the place and size don't change and it isn't raised.
-        unsafe { SetWindowPos(HWND(h as *mut _), Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) }.is_ok()
     }
 
     /// The last region applied: inner size and radius, in pixels.
