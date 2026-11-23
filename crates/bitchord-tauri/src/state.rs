@@ -34,6 +34,19 @@ impl From<Track> for TrackDto {
     }
 }
 
+impl From<TrackDto> for Track {
+    fn from(dto: TrackDto) -> Self {
+        Self {
+            video_id: dto.video_id,
+            title: dto.title,
+            artists: dto.artists,
+            album: dto.album,
+            duration_secs: dto.duration_secs,
+            thumbnail_url: dto.thumbnail_url,
+        }
+    }
+}
+
 pub struct AppState {
     pub engine: Arc<AudioEngine>,
     pub innertube: Arc<InnertubeClient>,

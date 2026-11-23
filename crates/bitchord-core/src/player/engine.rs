@@ -1,11 +1,13 @@
 use crate::cache::disk::DiskCache;
 use crate::innertube::client::InnertubeClient;
+use crate::innertube::models::Track;
 use crate::player::decoder::AudioDecoder;
 use crate::sink::cpal_sink::CpalAudioSink;
 use crate::stream::buffer::StreamBuffer;
 use crate::stream::downloader::ChunkDownloader;
 use rtrb::Producer;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -24,7 +26,7 @@ pub enum PlayerError {
     Io(#[from] std::io::Error),
 }
 
-/// Master BitChord audio playback engine.
+/// Master BitChord audio playback engine with queue management.
 /// Coordinates stream downloading, on-the-fly decoding, loudness leveling, and real-time output.
 pub struct AudioEngine {
     innertube: Arc<InnertubeClient>,
@@ -38,6 +40,12 @@ pub struct AudioEngine {
     normalizer_gain: Arc<Mutex<f32>>,
     cancel_signal: Arc<AtomicBool>,
     runtime_handle: tokio::runtime::Handle,
+    // Queue & Track state
+    current_track: Arc<Mutex<Option<Track>>>,
+    queue: Arc<Mutex<VecDeque<Track>>>,
+    history: Arc<Mutex<Vec<Track>>>,
+    repeat_mode: Arc<AtomicU8>, // 0: Off, 1: Repeat All, 2: Repeat One
+    shuffle_mode: Arc<AtomicBool>,
 }
 
 impl AudioEngine {
@@ -57,15 +65,19 @@ impl AudioEngine {
             normalizer_gain: Arc::new(Mutex::new(1.0)),
             cancel_signal: Arc::new(AtomicBool::new(false)),
             runtime_handle: tokio::runtime::Handle::current(),
+            current_track: Arc::new(Mutex::new(None)),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            history: Arc::new(Mutex::new(Vec::new())),
+            repeat_mode: Arc::new(AtomicU8::new(0)),
+            shuffle_mode: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Plays a track by its YouTube video ID.
     pub async fn play(&self, video_id: &str) -> Result<(), PlayerError> {
-        // Stop any currently running playback thread
         self.stop();
 
-        info!("Starting playback for track: {}", video_id);
+        info!("Starting playback for track ID: {}", video_id);
 
         let stream_info = self.innertube.get_stream(video_id).await?;
 
@@ -153,7 +165,6 @@ impl AudioEngine {
                             pos_ms.store(ms as u64, Ordering::Release);
 
                             if offset < samples.len() {
-                                // Buffer full, sleep briefly to let the real-time audio thread consume
                                 std::thread::sleep(Duration::from_millis(15));
                             }
                         }
@@ -173,6 +184,112 @@ impl AudioEngine {
         });
 
         Ok(())
+    }
+
+    /// Plays a track and records it as current.
+    pub async fn play_track(&self, track: Track) -> Result<(), PlayerError> {
+        let video_id = track.video_id.clone();
+        {
+            let mut current = self.current_track.lock().await;
+            if let Some(old) = current.take() {
+                self.history.lock().await.push(old);
+            }
+            *current = Some(track);
+        }
+        self.play(&video_id).await
+    }
+
+    pub async fn enqueue(&self, track: Track) {
+        self.queue.lock().await.push_back(track);
+    }
+
+    pub async fn remove_from_queue(&self, index: usize) -> Option<Track> {
+        let mut q = self.queue.lock().await;
+        if index < q.len() {
+            q.remove(index)
+        } else {
+            None
+        }
+    }
+
+    pub async fn clear_queue(&self) {
+        self.queue.lock().await.clear();
+    }
+
+    pub async fn get_queue(&self) -> Vec<Track> {
+        self.queue.lock().await.iter().cloned().collect()
+    }
+
+    pub async fn current_track(&self) -> Option<Track> {
+        self.current_track.lock().await.clone()
+    }
+
+    pub async fn skip_next(&self) -> Result<Option<Track>, PlayerError> {
+        let next_track = {
+            let mut q = self.queue.lock().await;
+            q.pop_front()
+        };
+
+        if let Some(track) = next_track {
+            self.play_track(track.clone()).await?;
+            Ok(Some(track))
+        } else if self.repeat_mode.load(Ordering::Acquire) == 1 {
+            // Repeat all: restore queue from history
+            let mut hist = self.history.lock().await;
+            if !hist.is_empty() {
+                let mut q = self.queue.lock().await;
+                for t in hist.drain(..) {
+                    q.push_back(t);
+                }
+                if let Some(first) = q.pop_front() {
+                    self.play_track(first.clone()).await?;
+                    return Ok(Some(first));
+                }
+            }
+            Ok(None)
+        } else {
+            self.stop();
+            Ok(None)
+        }
+    }
+
+    pub async fn skip_previous(&self) -> Result<Option<Track>, PlayerError> {
+        let prev_track = {
+            let mut hist = self.history.lock().await;
+            hist.pop()
+        };
+
+        if let Some(track) = prev_track {
+            // Put current track back in front of queue
+            if let Some(curr) = self.current_track.lock().await.take() {
+                self.queue.lock().await.push_front(curr);
+            }
+            self.play_track(track.clone()).await?;
+            Ok(Some(track))
+        } else {
+            // Restart current track from beginning
+            self.position_ms.store(0, Ordering::Release);
+            Ok(self.current_track().await)
+        }
+    }
+
+    pub fn set_repeat_mode(&self, mode: u8) {
+        self.repeat_mode.store(mode.min(2), Ordering::Release);
+    }
+
+    pub fn get_repeat_mode(&self) -> u8 {
+        self.repeat_mode.load(Ordering::Acquire)
+    }
+
+    pub fn toggle_shuffle(&self) -> bool {
+        let current = self.shuffle_mode.load(Ordering::Acquire);
+        let new_val = !current;
+        self.shuffle_mode.store(new_val, Ordering::Release);
+        new_val
+    }
+
+    pub fn is_shuffle(&self) -> bool {
+        self.shuffle_mode.load(Ordering::Acquire)
     }
 
     pub fn pause(&self) {

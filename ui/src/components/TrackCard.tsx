@@ -1,14 +1,20 @@
 import React from 'react';
-import { Play, Music } from 'lucide-react';
+import { Play, Plus, Music } from 'lucide-react';
 import { Track } from '../hooks/useAudioEngine';
 
 interface TrackCardProps {
   track: Track;
   isPlaying: boolean;
   onPlay: (track: Track) => void;
+  onEnqueue?: (track: Track) => void;
 }
 
-export const TrackCard: React.FC<TrackCardProps> = ({ track, isPlaying, onPlay }) => {
+export const TrackCard: React.FC<TrackCardProps> = ({
+  track,
+  isPlaying,
+  onPlay,
+  onEnqueue,
+}) => {
   return (
     <div
       onClick={() => onPlay(track)}
@@ -27,13 +33,21 @@ export const TrackCard: React.FC<TrackCardProps> = ({ track, isPlaying, onPlay }
             <Music className="w-6 h-6" />
           </div>
         )}
-        <div className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity ${isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+        <div
+          className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity ${
+            isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+        >
           <Play className="w-5 h-5 text-white fill-current translate-x-0.5" />
         </div>
       </div>
 
       <div className="flex-1 min-w-0 pr-2">
-        <h4 className={`text-sm font-medium truncate ${isPlaying ? 'text-rose-400 font-semibold' : 'text-white/90 group-hover:text-white'}`}>
+        <h4
+          className={`text-sm font-medium truncate ${
+            isPlaying ? 'text-rose-400 font-semibold' : 'text-white/90 group-hover:text-white'
+          }`}
+        >
           {track.title}
         </h4>
         <p className="text-xs text-white/50 truncate mt-0.5">
@@ -41,11 +55,27 @@ export const TrackCard: React.FC<TrackCardProps> = ({ track, isPlaying, onPlay }
         </p>
       </div>
 
-      {track.duration_secs > 0 && (
-        <span className="text-xs font-mono text-white/35 group-hover:text-white/60 tabular-nums">
-          {Math.floor(track.duration_secs / 60)}:{(track.duration_secs % 60).toString().padStart(2, '0')}
-        </span>
-      )}
+      <div className="flex items-center space-x-2">
+        {onEnqueue && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEnqueue(track);
+            }}
+            className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/15 flex items-center justify-center text-white/40 hover:text-white opacity-0 group-hover:opacity-100 transition-all"
+            title="Add to queue"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        )}
+
+        {track.duration_secs > 0 && (
+          <span className="text-xs font-mono text-white/35 group-hover:text-white/60 tabular-nums">
+            {Math.floor(track.duration_secs / 60)}:
+            {(track.duration_secs % 60).toString().padStart(2, '0')}
+          </span>
+        )}
+      </div>
     </div>
   );
 };

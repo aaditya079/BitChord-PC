@@ -23,6 +23,17 @@ pub fn run() {
             commands::get_playback_state,
             commands::search_tracks,
             commands::get_lyrics,
+            commands::enqueue_track,
+            commands::remove_from_queue,
+            commands::clear_queue,
+            commands::get_queue,
+            commands::get_current_track,
+            commands::skip_next,
+            commands::skip_previous,
+            commands::set_repeat_mode,
+            commands::get_repeat_mode,
+            commands::toggle_shuffle,
+            commands::is_shuffle,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

@@ -3,8 +3,9 @@ import { Titlebar } from './components/Titlebar';
 import { SearchBar } from './components/SearchBar';
 import { TrackCard } from './components/TrackCard';
 import { NowPlayingBar } from './components/NowPlayingBar';
-import { useAudioEngine, Track } from './hooks/useAudioEngine';
-import { Sparkles, Music2, Radio } from 'lucide-react';
+import { FullscreenPlayer } from './components/FullscreenPlayer';
+import { useAudioEngine } from './hooks/useAudioEngine';
+import { Sparkles, Music2 } from 'lucide-react';
 
 export const App: React.FC = () => {
   const {
@@ -15,13 +16,25 @@ export const App: React.FC = () => {
     volume,
     isSearching,
     searchResults,
+    queue,
+    lyrics,
+    isLoadingLyrics,
+    repeatMode,
+    isShuffle,
     playTrack,
     togglePlayback,
     setVolume,
     search,
+    enqueueTrack,
+    removeFromQueue,
+    clearQueue,
+    skipNext,
+    skipPrevious,
+    setRepeatMode,
+    toggleShuffle,
   } = useAudioEngine();
 
-  const [activeTab, setActiveTab] = useState<'search' | 'trending'>('search');
+  const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
 
   return (
     <div className="relative w-screen h-screen overflow-hidden flex flex-col bg-zinc-950/70 select-none text-zinc-100">
@@ -64,6 +77,7 @@ export const App: React.FC = () => {
                   track={track}
                   isPlaying={currentTrack?.video_id === track.video_id && isPlaying}
                   onPlay={playTrack}
+                  onEnqueue={enqueueTrack}
                 />
               ))}
             </div>
@@ -91,7 +105,35 @@ export const App: React.FC = () => {
         durationMs={durationMs}
         volume={volume}
         onTogglePlay={togglePlayback}
+        onSkipNext={skipNext}
+        onSkipPrevious={skipPrevious}
         onVolumeChange={setVolume}
+        onExpandFullscreen={() => setIsFullscreenOpen(true)}
+      />
+
+      {/* Fullscreen Player Modal */}
+      <FullscreenPlayer
+        isOpen={isFullscreenOpen}
+        onClose={() => setIsFullscreenOpen(false)}
+        track={currentTrack}
+        isPlaying={isPlaying}
+        positionMs={positionMs}
+        durationMs={durationMs}
+        volume={volume}
+        lyrics={lyrics}
+        isLoadingLyrics={isLoadingLyrics}
+        queue={queue}
+        repeatMode={repeatMode}
+        isShuffle={isShuffle}
+        onTogglePlay={togglePlayback}
+        onSkipNext={skipNext}
+        onSkipPrevious={skipPrevious}
+        onVolumeChange={setVolume}
+        onRepeatToggle={() => setRepeatMode((repeatMode + 1) % 3)}
+        onShuffleToggle={toggleShuffle}
+        onPlayTrack={playTrack}
+        onRemoveFromQueue={removeFromQueue}
+        onClearQueue={clearQueue}
       />
     </div>
   );
