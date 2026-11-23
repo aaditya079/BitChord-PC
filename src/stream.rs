@@ -211,6 +211,12 @@ impl Shared {
         self.changed.notify_waiters();
     }
 
+    /// Whether the download has been cancelled or encountered an error.
+    pub fn is_stopped(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.cancelled || inner.error.is_some()
+    }
+
     fn claim(&self) -> Claim {
         let mut inner = self.inner.lock().unwrap();
         if inner.cancelled || inner.error.is_some() {
@@ -343,18 +349,41 @@ pub async fn download(http: reqwest::Client, url: String, ua: String, shared: Ar
                         }
                         Err(e) if is_forbidden(&e) && slot.renew(version).await => {}
                         Err(e) if attempt < RETRIES => {
+                            if shared.is_stopped() {
+                                break;
+                            }
                             attempt += 1;
-                            let delay_ms = 400 * (attempt * attempt) as u64;
-                            if is_forbidden(&e) {
-                                log::warn!("range {a}-{b}: HTTP 403 Forbidden; retrying with backoff ({delay_ms} ms, attempt {attempt}/{RETRIES})");
-                                tokio::time::sleep(Duration::from_millis(delay_ms.max(800))).await;
-                                let _ = slot.renew(version).await;
+                            let (delay_ms, is_403) = if is_forbidden(&e) {
+                                let ms = (400 * (attempt * attempt) as u64).max(800);
+                                log::warn!("range {a}-{b}: HTTP 403 Forbidden; retrying with backoff ({ms} ms, attempt {attempt}/{RETRIES})");
+                                (ms, true)
                             } else {
+                                let ms = 400 * (attempt * attempt) as u64;
                                 log::warn!("range {a}-{b}: {e:#} (retry {attempt}/{RETRIES})");
-                                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                                (ms, false)
+                            };
+                            let sleep = tokio::time::sleep(Duration::from_millis(delay_ms));
+                            tokio::pin!(sleep);
+                            loop {
+                                if shared.is_stopped() {
+                                    break;
+                                }
+                                tokio::select! {
+                                    () = &mut sleep => break,
+                                    _ = shared.changed.notified() => {}
+                                }
+                            }
+                            if shared.is_stopped() {
+                                break;
+                            }
+                            if is_403 {
+                                let _ = slot.renew(version).await;
                             }
                         }
                         Err(e) => {
+                            if shared.is_stopped() {
+                                return;
+                            }
                             shared.fail(format!("range {a}-{b}: {e:#}"));
                             return;
                         }

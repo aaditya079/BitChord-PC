@@ -137,8 +137,8 @@ impl Prefs {
 }
 
 const DEFAULT_BUTTON1: &str = "Listen on YouTube Music";
-const DEFAULT_BUTTON2: &str = "Visit BitChord PC Continued";
-const PROJECT_URL: &str = "https://github.com/jackychan4891/BitChord-PC-Continued";
+const DEFAULT_BUTTON2: &str = "Visit BitChord PC";
+const PROJECT_URL: &str = "https://github.com/aaditya079/BitChord-PC";
 /// The cover when a song has no artwork URL: the card always has one, as the old app's did.
 const FALLBACK_ART: &str = "https://raw.githubusercontent.com/kushagrasinghx/BitChord/main/app/src/main/ic_launcher-playstore.png";
 

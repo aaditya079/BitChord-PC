@@ -78,7 +78,7 @@ BitChord PC is built upon the extraordinary contributions of the open-source com
 
 ## Installation
 
-Download the latest build from [Releases](https://github.com/jackychan4891/BitChord-PC-Continued/releases/latest).
+Download the latest build from [Releases](https://github.com/aaditya079/BitChord-PC/releases/latest).
 
 - **Windows** — download the Windows release asset, extract/install it, and run `bitchord.exe`.
 - **macOS / Linux** — use the platform release assets when available.
@@ -90,8 +90,8 @@ If Windows SmartScreen appears for an unsigned build, choose **More info → Run
 You need the [Rust toolchain](https://rustup.rs/).
 
 ```sh
-git clone https://github.com/jackychan4891/BitChord-PC-Continued.git
-cd BitChord-PC-Continued
+git clone https://github.com/aaditya079/BitChord-PC.git
+cd BitChord-PC
 cargo build --release
 ```
 
