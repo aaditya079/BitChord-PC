@@ -3335,6 +3335,18 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
+        let mut hardware_rgb = crate::lighting::is_experimental_lighting_enabled();
+        let diag = crate::lighting::get_diagnostics();
+        let rgb_desc = format!(
+            "Synchronizes keyboard and gaming peripherals with album art (ASUS TUF/ROG kernel ACPI, OpenRGB localhost:6742, SteelSeries GameSense).\nStatus: ASUS [{}] | OpenRGB [{}] | SteelSeries [{}]",
+            diag.asus_tuf, diag.openrgb, diag.steelseries
+        );
+        setting_row(ui, "Ambient hardware lighting (Experimental)", Some(&rgb_desc), |ui| {
+            if toggle(ui, &mut hardware_rgb, "Ambient hardware lighting").changed() {
+                crate::lighting::set_experimental_lighting(hardware_rgb);
+            }
+        });
+        divider(ui);
         setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing and on the album page, looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music, remembered on disk so each song asks once."), |ui| {
             if toggle(ui, &mut app.animated_covers, "Animated covers").changed() {
                 app.visual = theme::VisualPreset::Custom;

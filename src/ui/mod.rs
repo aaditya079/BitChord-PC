@@ -1890,6 +1890,7 @@ impl App {
     fn show_cover_colours(&mut self, now: f64) {
         let Some(art) = self.cover_colours().cloned() else { return };
         self.accent = art.accent;
+        crate::lighting::sync_ambient_rgb(self.accent);
         if let Some(bg) = &self.bg {
             bg.set_art(art);
         }
