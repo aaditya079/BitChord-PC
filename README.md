@@ -92,15 +92,15 @@ Defensible, reproducible resource benchmarks measured under consistent desktop l
 - **Cold Startup:** Measured via high-resolution performance timers from process spawn until the first GUI frame is painted. Reported values represent the **median of 10 clean cold runs** (cleared filesystem disk cache).
 - **Memory Footprint:** Working Set (physical RAM currently mapped to process) and Private Bytes (committed virtual memory unshared with other processes) sampled via Windows performance counters.
 
-| Metric | BitChord PC (v2.1.1) | LoserDenji Baseline (v2.0.2) | Standard Web / Electron Client |
-| :--- | :--- | :--- | :--- |
-| **Cold Startup Time (Median)** | **182 ms** | 245 ms | ~2,500 – 4,000 ms |
-| **Memory (Idle Working Set)** | **42 MB** *(Private: 26 MB)* | 54 MB *(Private: 34 MB)* | ~220 – 350 MB |
-| **Memory (Active Playback Working Set)** | **68 MB** *(Private: 44 MB)* | 79 MB *(Private: 52 MB)* | ~450 – 700 MB |
-| **GPU Shader Load (Default)** | **~1.2%** (multi-pass Gaussian blur) | ~1.4% | ~5% – 9% (Chromium compositor) |
-| **GPU Shader Load (Power-Saver Mode)** | **< 0.2%** (blur shaders disabled) | N/A | N/A |
-| **Installer Size** | **~14 MB** | ~14 MB | ~85 – 140 MB |
-| **Installed Disk Footprint** | **~35 MB** | ~35 MB | ~300 – 500 MB |
+| Metric | BitChord PC (v2.1.1) | Standard Web / Electron Client |
+| :--- | :--- | :--- |
+| **Cold Startup Time (Median)** | **182 ms** | ~2,500 – 4,000 ms |
+| **Memory (Idle Working Set)** | **42 MB** *(Private: 26 MB)* | ~220 – 350 MB |
+| **Memory (Active Playback Working Set)** | **68 MB** *(Private: 44 MB)* | ~450 – 700 MB |
+| **GPU Shader Load (Default)** | **~1.2%** (multi-pass Gaussian blur) | ~5% – 9% (Chromium compositor) |
+| **GPU Shader Load (Power-Saver Mode)** | **< 0.2%** (blur shaders disabled) | N/A |
+| **Installer Size** | **~14 MB** | ~85 – 140 MB |
+| **Installed Disk Footprint** | **~35 MB** | ~300 – 500 MB |
 
 ## Installation
 
