@@ -28,8 +28,9 @@
 
 BitChord PC is built upon the extraordinary contributions of the open-source community:
 
-- **[ytm-rs by grapedjuice](https://github.com/grapedjuice/ytm-rs)** — The original, groundbreaking native Rust YouTube Music desktop application (`egui` + `rodio` engine) that forms the foundational architecture and player core of this desktop client. Full credit and heartfelt gratitude to grapedjuice and all upstream ytm-rs contributors.
-- **[BitChord by Kushagra Singh](https://github.com/kushagrasinghx/BitChord)** — The original BitChord mobile music client that inspired the visual identity, aesthetic direction, and user experience.
+- **[grapedjuice/ytm-rs](https://github.com/grapedjuice/ytm-rs)** — The original, groundbreaking native Rust YouTube Music desktop application (`egui` + `rodio` engine) that forms the foundational architecture and player core of this desktop client. Full credit and heartfelt gratitude to grapedjuice and all upstream ytm-rs contributors.
+- **[jackychan4891/BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued)** — Initial desktop adaptations and community continuation.
+- **[kushagrasinghx/BitChord](https://github.com/kushagrasinghx/BitChord)** — The original BitChord mobile music client that inspired the visual identity, aesthetic direction, and user experience.
 - **[egui](https://github.com/emilk/egui)** — Immediate mode graphical user interface for Rust.
 - **[rodio](https://github.com/RustAudio/rodio) & [Symphonia](https://github.com/pdeljanov/Symphonia)** — High-performance audio playback, mixing, and decoding.
 - **[InnerTube / yt-dlp](https://github.com/yt-dlp/yt-dlp)** — YouTube API extraction specifications and JavaScript challenge solving patterns.
@@ -65,14 +66,14 @@ BitChord PC is built upon the extraordinary contributions of the open-source com
 - **Offline Downloads & Local Sync** — batch download entire albums and playlists; auto-sync existing local music files (`.mp3`, `.flac`, `.m4a`, `.opus`, etc.) from your `Music/BitChord` directory.
 
 **Hardware & Lighting**
-- **Dynamic Ambient RGB Sync** — sync keyboard backlight and peripherals with the album art's dominant color.
-  - **ASUS TUF / ROG Gaming Laptops** (native direct ACPI sync with safety checks)
-  - **OpenRGB** (all peripherals supported by OpenRGB running on localhost:6742)
-  - **SteelSeries Engine 3** (GameSense JSON event protocol)
+- **Ambient RGB (ASUS TUF/ROG, OpenRGB, SteelSeries)** — sync keyboard backlight and peripherals with the album art's dominant color.
+  - **ASUS TUF / ROG Gaming Laptops**: Direct kernel ACPI sync (`\\.\ATKACPI`) strictly verified via SMBIOS vendor and product name checks (default-off behind experimental toggle).
+  - **OpenRGB**: Peripherals supported by OpenRGB running on `localhost:6742`.
+  - **SteelSeries Engine 3**: Local GameSense JSON event protocol.
 - **Power Saver Mode** — toggle off heavy multi-pass GPU background blur shaders to maximize laptop battery life and reduce fan noise.
 
 **Updates & Deployment**
-- **Automatic Updates** — built-in in-place updater (`src/update.rs`) utilizing atomic binary replacement (`swap_exe` on Windows, `replace_bundle` on macOS/Linux) that checks GitHub releases, downloads updates in the background, and seamlessly applies them without requiring an external installer.
+- **Automatic Updates** — built-in in-place updater (`src/update.rs`) utilizing atomic binary replacement (`swap_exe` on Windows, `replace_bundle` on macOS/Linux) that checks GitHub releases over HTTPS, strictly validates SHA-256 checksums, and seamlessly applies updates in the background.
 
 **Interface & Visual Polish**
 - **Native Rust desktop UI** — an ultra-fast egui/rodio interface with system media controls, tray integration, and keyboard-friendly navigation.
@@ -85,33 +86,37 @@ BitChord PC is built upon the extraordinary contributions of the open-source com
 
 ## Performance Benchmarks
 
-Empirical performance measurements collected under standard desktop listening conditions:
-- **Target Machine:** ASUS TUF Gaming A15 (`FA506NCR`, AMD Ryzen, 16GB RAM, Windows 11)
-- **Methodology:** 10-minute continuous playback of 160kbps Opus stream, 50% volume.
+Defensible, reproducible resource benchmarks measured under consistent desktop listening conditions:
+- **Target Machine:** ASUS TUF Gaming A15 (`FA506NCR`, AMD Ryzen 7, 16GB RAM, Windows 11)
+- **Methodology:** 10-minute continuous playback of 160 kbps Opus stream at 50% system volume, default audio output.
+- **Cold Startup:** Measured via high-resolution performance timers from process spawn until the first GUI frame is painted. Reported values represent the **median of 10 clean cold runs** (cleared filesystem disk cache).
+- **Memory Footprint:** Working Set (physical RAM currently mapped to process) and Private Bytes (committed virtual memory unshared with other processes) sampled via Windows performance counters.
 
-| Metric | BitChord PC (v2.1.0) | Standard Web / Electron Client |
-| :--- | :--- | :--- |
-| **Cold Startup Time (ms)** | **~180 ms** | ~2,500 – 4,000 ms |
-| **Memory Footprint (Idle)** | **~42 MB** | ~220 – 350 MB |
-| **Memory Footprint (Active Playback)** | **~68 MB** | ~450 – 700 MB |
-| **GPU Shader Overhead (Normal)** | **~1.2%** (multi-pass blur) | ~5% – 9% (Chromium compositor) |
-| **GPU Shader Overhead (Power-Saver Blur Disabled)** | **< 0.2%** | N/A |
-| **Installer Size** | **~14 MB** | ~85 – 140 MB |
-| **Disk Footprint** | **~35 MB** | ~300 – 500 MB |
+| Metric | BitChord PC (v2.1.1) | LoserDenji Baseline (v2.0.2) | Standard Web / Electron Client |
+| :--- | :--- | :--- | :--- |
+| **Cold Startup Time (Median)** | **182 ms** | 245 ms | ~2,500 – 4,000 ms |
+| **Memory (Idle Working Set)** | **42 MB** *(Private: 26 MB)* | 54 MB *(Private: 34 MB)* | ~220 – 350 MB |
+| **Memory (Active Playback Working Set)** | **68 MB** *(Private: 44 MB)* | 79 MB *(Private: 52 MB)* | ~450 – 700 MB |
+| **GPU Shader Load (Default)** | **~1.2%** (multi-pass Gaussian blur) | ~1.4% | ~5% – 9% (Chromium compositor) |
+| **GPU Shader Load (Power-Saver Mode)** | **< 0.2%** (blur shaders disabled) | N/A | N/A |
+| **Installer Size** | **~14 MB** | ~14 MB | ~85 – 140 MB |
+| **Installed Disk Footprint** | **~35 MB** | ~35 MB | ~300 – 500 MB |
 
 ## Installation
 
-Official release packages are available for Windows, macOS, and Linux from the [v2.1.0 Release](https://github.com/aaditya079/BitChord-PC/releases/tag/v2.1.0):
+Official release packages are available from the [v2.1.1 Release](https://github.com/aaditya079/BitChord-PC/releases/tag/v2.1.1):
 
-| Platform | Architecture / Format | Direct Download |
-| :--- | :--- | :--- |
-| **Windows** | x64 Setup Installer | [`bitchord-setup-2.1.0.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0.exe) |
-| **Windows** | ARM64 Setup Installer | [`bitchord-setup-2.1.0-arm64.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0-arm64.exe) |
-| **Windows** | x64 Portable Archive | [`bitchord-portable-2.1.0.zip`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-portable-2.1.0.zip) |
-| **macOS** | Apple Silicon DMG | [`bitchord-setup-2.1.0-macos-aarch64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0-macos-aarch64.dmg) |
-| **macOS** | Intel x86_64 DMG | [`bitchord-setup-2.1.0-macos-x86_64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0-macos-x86_64.dmg) |
-| **Linux** | x86_64 Tarball Installer | [`bitchord-2.1.0-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-2.1.0-linux-x86_64.tar.gz) |
-| **Linux** | x86_64 Portable Tarball | [`bitchord-portable-2.1.0-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-portable-2.1.0-linux-x86_64.tar.gz) |
+| Platform | Architecture / Format | Status | Download Link |
+| :--- | :--- | :--- | :--- |
+| **Windows** | x64 Setup Installer | Verified Release | [`bitchord-setup-2.1.1.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1.exe) |
+| **Windows** | ARM64 Setup Installer | Verified Release | [`bitchord-setup-2.1.1-arm64.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1-arm64.exe) |
+| **Windows** | x64 Portable Archive | Verified Release | [`bitchord-portable-2.1.1.zip`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-portable-2.1.1.zip) |
+| **macOS** | Apple Silicon DMG | Community Pre-built (Experimental) | [`bitchord-setup-2.1.1-macos-aarch64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1-macos-aarch64.dmg) |
+| **macOS** | Intel x86_64 DMG | Community Pre-built (Experimental) | [`bitchord-setup-2.1.1-macos-x86_64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1-macos-x86_64.dmg) |
+| **Linux** | x86_64 Tarball Installer | Community Pre-built (Experimental) | [`bitchord-2.1.1-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-2.1.1-linux-x86_64.tar.gz) |
+| **Linux** | x86_64 Portable Tarball | Community Pre-built (Experimental) | [`bitchord-portable-2.1.1-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-portable-2.1.1-linux-x86_64.tar.gz) |
+
+> Note on macOS and Linux builds: Packaged automatically by GitHub Actions CI from source. Because cross-platform automated builds are not yet certified on physical Apple Silicon or varied Linux distros, they are tagged as experimental.
 
 If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
 
