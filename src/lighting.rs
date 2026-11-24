@@ -3,15 +3,37 @@
 //! Synchronizes keyboard backlights and gaming peripherals with the current track's album art.
 //!
 //! ### Supported Hardware Backends
-//! - **ASUS TUF / ROG Laptops**: Direct kernel ACPI (`\\.\ATKACPI`) control with strict
-//!   SMBIOS / Windows Registry hardware verification guards to ensure driver calls only run
-//!   on verified ASUS hardware.
+//! - **ASUS TUF / ROG Laptops**: Direct kernel ACPI (`\\.\ATKACPI`) control restricted
+//!   strictly via SMBIOS and Windows Registry vendor/product checks exclusively to ASUS TUF
+//!   and ROG devices. Feature is default-off behind an experimental toggle.
 //! - **OpenRGB**: OpenRGB network client communicating over TCP to `localhost:6742` for all
 //!   peripherals managed by an OpenRGB instance.
 //! - **SteelSeries Engine 3**: GameSense local HTTP/JSON event protocol via `coreProps.json`.
 //!
 //! Note: Proprietary vendor SDKs such as Corsair iCUE, Razer Chroma, ASUS Aura SDK, and
 //! Logitech LIGHTSYNC are not natively embedded; users of those peripherals should use OpenRGB.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static EXPERIMENTAL_LIGHTING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enables or disables experimental ambient lighting backends.
+/// Default is disabled (`false`).
+pub fn set_experimental_lighting(enabled: bool) {
+    EXPERIMENTAL_LIGHTING_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether experimental ambient lighting backends are enabled.
+pub fn is_experimental_lighting_enabled() -> bool {
+    EXPERIMENTAL_LIGHTING_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Pure evaluation function verifying whether the SMBIOS vendor and product identify
+/// an ASUS TUF or ROG machine.
+pub fn supported_asus(vendor: &str, product: &str) -> bool {
+    let (v, p) = (vendor.to_ascii_uppercase(), product.to_ascii_uppercase());
+    v.contains("ASUS") && (p.contains("TUF") || p.contains("ROG"))
+}
 
 /// Boosts the extracted album art color's saturation and brightness for punchy LED illumination.
 pub fn boost_color(c: egui::Color32) -> (u8, u8, u8) {
@@ -27,8 +49,6 @@ pub fn boost_color(c: egui::Color32) -> (u8, u8, u8) {
         0.0
     } else if (max - r).abs() < 1e-4 {
         60.0 * (((g - b) / delta) % 6.0)
-    } else if (max - g).abs() < 1e-4 {
-        60.0 * (((b - r) / delta) + 2.0)
     } else if (max - g).abs() < 1e-4 {
         60.0 * (((b - r) / delta) + 2.0)
     } else {
@@ -66,6 +86,9 @@ pub fn boost_color(c: egui::Color32) -> (u8, u8, u8) {
 
 /// Dispatches the boosted color to all available hardware backends asynchronously.
 pub fn sync_ambient_rgb(c: egui::Color32) {
+    if !is_experimental_lighting_enabled() {
+        return;
+    }
     std::thread::spawn(move || {
         let (r, g, b) = boost_color(c);
         #[cfg(windows)]
@@ -77,8 +100,9 @@ pub fn sync_ambient_rgb(c: egui::Color32) {
 
 #[cfg(windows)]
 mod asus_tuf {
+    use super::supported_asus;
     use std::sync::OnceLock;
-    use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
@@ -89,6 +113,18 @@ mod asus_tuf {
     const DEV_ID_TUF_KB: u32 = 0x00100056;
 
     static IS_ASUS_HARDWARE: OnceLock<bool> = OnceLock::new();
+
+    struct SafeHandle(HANDLE);
+
+    impl Drop for SafeHandle {
+        fn drop(&mut self) {
+            if self.0 != INVALID_HANDLE_VALUE && !self.0.is_invalid() {
+                unsafe {
+                    let _ = CloseHandle(self.0);
+                }
+            }
+        }
+    }
 
     fn query_bios_reg(name: &str) -> Option<String> {
         let mut buf = [0u16; 256];
@@ -113,13 +149,17 @@ mod asus_tuf {
         (!s.is_empty()).then(|| s.to_owned())
     }
 
-    /// Verifies via SMBIOS / Windows Registry that the machine is an ASUS/ASUSTeK system
+    /// Verifies via SMBIOS / Windows Registry that the machine is an ASUS TUF or ROG system
     /// before ever attempting to open the kernel ACPI driver device handle.
     fn is_asus_hardware() -> bool {
         *IS_ASUS_HARDWARE.get_or_init(|| {
-            let mfg = query_bios_reg("SystemManufacturer").unwrap_or_default().to_ascii_uppercase();
-            let board = query_bios_reg("BaseBoardManufacturer").unwrap_or_default().to_ascii_uppercase();
-            mfg.contains("ASUS") || mfg.contains("ASUSTEK") || board.contains("ASUS") || board.contains("ASUSTEK")
+            let vendor = query_bios_reg("SystemManufacturer")
+                .or_else(|| query_bios_reg("BaseBoardManufacturer"))
+                .unwrap_or_default();
+            let product = query_bios_reg("SystemProductName")
+                .or_else(|| query_bios_reg("BaseBoardProduct"))
+                .unwrap_or_default();
+            supported_asus(&vendor, &product)
         })
     }
 
@@ -128,7 +168,7 @@ mod asus_tuf {
             return;
         }
         unsafe {
-            let handle = CreateFileW(
+            let handle_res = CreateFileW(
                 w!(r"\\.\ATKACPI"),
                 0x80000000 | 0x40000000, // GENERIC_READ | GENERIC_WRITE
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -137,34 +177,35 @@ mod asus_tuf {
                 FILE_FLAGS_AND_ATTRIBUTES(0),
                 None,
             );
-            if let Ok(handle) = handle {
-                if handle != INVALID_HANDLE_VALUE {
-                    // Buffer: [MethodID: 4B] + [Length: 4B (10)] + [DeviceID: 4B] + [Payload: 6B]
-                    let mut buf = [0u8; 18];
-                    buf[0..4].copy_from_slice(&METHOD_DEVS.to_le_bytes());
-                    buf[4..8].copy_from_slice(&10u32.to_le_bytes());
-                    buf[8..12].copy_from_slice(&DEV_ID_TUF_KB.to_le_bytes());
-                    buf[12] = 0xb4;
-                    buf[13] = 0x00; // static mode
-                    buf[14] = r;
-                    buf[15] = g;
-                    buf[16] = b;
-                    buf[17] = 0x00; // speed
-
-                    let mut returned: u32 = 0;
-                    let _ = DeviceIoControl(
-                        handle,
-                        IOCTL_ASUS_ATK,
-                        Some(buf.as_ptr() as *const _),
-                        buf.len() as u32,
-                        None,
-                        0,
-                        Some(&mut returned),
-                        None,
-                    );
-                    let _ = CloseHandle(handle);
-                }
+            let Ok(raw_handle) = handle_res else { return };
+            if raw_handle == INVALID_HANDLE_VALUE || raw_handle.is_invalid() {
+                return;
             }
+            let handle = SafeHandle(raw_handle);
+
+            // Buffer: [MethodID: 4B] + [Length: 4B (10)] + [DeviceID: 4B] + [Payload: 6B]
+            let mut buf = [0u8; 18];
+            buf[0..4].copy_from_slice(&METHOD_DEVS.to_le_bytes());
+            buf[4..8].copy_from_slice(&10u32.to_le_bytes());
+            buf[8..12].copy_from_slice(&DEV_ID_TUF_KB.to_le_bytes());
+            buf[12] = 0xb4;
+            buf[13] = 0x00; // static mode
+            buf[14] = r;
+            buf[15] = g;
+            buf[16] = b;
+            buf[17] = 0x00; // speed
+
+            let mut returned: u32 = 0;
+            let _ = DeviceIoControl(
+                handle.0,
+                IOCTL_ASUS_ATK,
+                Some(buf.as_ptr() as *const _),
+                buf.len() as u32,
+                None,
+                0,
+                Some(&mut returned),
+                None,
+            );
         }
     }
 }
@@ -223,5 +264,41 @@ mod steelseries {
             );
             let _ = stream.write_all(req.as_bytes());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_supported_asus_pure_logic() {
+        // Supported ASUS gaming laptop lines
+        assert!(supported_asus("ASUSTeK COMPUTER INC.", "ASUS TUF Gaming A15 FA506NCR"));
+        assert!(supported_asus("ASUS", "ROG Zephyrus G14"));
+        assert!(supported_asus("ASUSTeK", "ROG Strix SCAR 16"));
+        assert!(supported_asus("ASUS", "TUF Gaming F17"));
+        assert!(supported_asus("asus", "rog ally"));
+
+        // Non-gaming or standard ASUS devices
+        assert!(!supported_asus("ASUSTeK COMPUTER INC.", "ZenBook Pro 15 UX535"));
+        assert!(!supported_asus("ASUS", "VivoBook S15"));
+        assert!(!supported_asus("ASUS", "ExpertBook B9"));
+
+        // Non-ASUS hardware
+        assert!(!supported_asus("Lenovo", "Legion Pro 7"));
+        assert!(!supported_asus("Dell Inc.", "Alienware m16"));
+        assert!(!supported_asus("HP", "Omen 16"));
+        assert!(!supported_asus("Micro-Star International Co., Ltd.", "MSI Raider GE78"));
+        assert!(!supported_asus("", ""));
+    }
+
+    #[test]
+    fn test_experimental_lighting_toggle_default_off() {
+        assert!(!is_experimental_lighting_enabled());
+        set_experimental_lighting(true);
+        assert!(is_experimental_lighting_enabled());
+        set_experimental_lighting(false);
+        assert!(!is_experimental_lighting_enabled());
     }
 }

@@ -1,4 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(
+    deprecated,
+    dead_code,
+    unused_variables,
+    clippy::all
+)]
 
 mod appicon;
 mod artist_signature;
@@ -25,6 +31,7 @@ mod jam;
 mod innertube;
 mod jsc;
 mod lastfm;
+pub mod lighting;
 mod listening;
 mod local;
 mod logging;
