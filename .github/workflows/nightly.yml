@@ -1,0 +1,59 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows release
+        run: cargo build --release --locked
+
+      - name: Stage WebView2Loader.dll
+        run: |
+          $dll = Get-ChildItem -Path "target\release\build\*\out\x64\WebView2Loader.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dll) { $dll = Get-ChildItem -Path "$HOME\.cargo\registry\src\*\webview2-com-sys-*\x64\WebView2Loader.dll" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if ($dll) {
+            Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force
+            Write-Host "staged $($dll.FullName) -> target\release\WebView2Loader.dll"
+          }
+
+      - name: Package nightly zip
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/release/bitchord.exe installer/portable.txt README.md LICENSE out/
+          if [ -f target/release/WebView2Loader.dll ]; then
+            cp target/release/WebView2Loader.dll out/
+          fi
+          cd out
+          tar -a -c -f ../bitchord-nightly-windows-x86_64.zip *
+
+      - name: Publish Nightly Prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          TAG="nightly"
+          TITLE="BitChord PC Nightly Build ($(date -u +'%Y-%m-%d'))"
+          BODY="Automated continuous integration nightly build generated on $(date -u +'%Y-%m-%d %H:%M:%S UTC') from commit $GITHUB_SHA."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" bitchord-nightly-windows-x86_64.zip --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$BODY" --prerelease
+          else
+            gh release create "$TAG" bitchord-nightly-windows-x86_64.zip --title "$TITLE" --notes "$BODY" --prerelease
+          fi
