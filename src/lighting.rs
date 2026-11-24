@@ -67,16 +67,56 @@ pub fn sync_ambient_rgb(c: egui::Color32) {
 
 #[cfg(windows)]
 mod asus_tuf {
+    use std::sync::OnceLock;
     use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
     use windows::Win32::System::IO::DeviceIoControl;
-    use windows::core::w;
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    use windows::core::{w, HSTRING};
 
     const IOCTL_ASUS_ATK: u32 = 0x0022240C;
     const METHOD_DEVS: u32 = 0x53564544; // 'DEVS' in little-endian ASCII
     const DEV_ID_TUF_KB: u32 = 0x00100056;
 
+    static IS_ASUS_HARDWARE: OnceLock<bool> = OnceLock::new();
+
+    fn query_bios_reg(name: &str) -> Option<String> {
+        let mut buf = [0u16; 256];
+        let mut size = (buf.len() * 2) as u32;
+        let ok = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                &HSTRING::from(r"HARDWARE\DESCRIPTION\System\BIOS"),
+                &HSTRING::from(name),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr() as *mut _),
+                Some(&mut size),
+            )
+        };
+        if ok.is_err() {
+            return None;
+        }
+        let len = (size as usize) / 2;
+        let s = String::from_utf16_lossy(&buf[..len.min(buf.len())]);
+        let s = s.trim_end_matches('\0').trim();
+        (!s.is_empty()).then(|| s.to_owned())
+    }
+
+    /// Verifies via SMBIOS / Windows Registry that the machine is an ASUS/ASUSTeK system
+    /// before ever attempting to open the kernel ACPI driver device handle.
+    fn is_asus_hardware() -> bool {
+        *IS_ASUS_HARDWARE.get_or_init(|| {
+            let mfg = query_bios_reg("SystemManufacturer").unwrap_or_default().to_ascii_uppercase();
+            let board = query_bios_reg("BaseBoardManufacturer").unwrap_or_default().to_ascii_uppercase();
+            mfg.contains("ASUS") || mfg.contains("ASUSTEK") || board.contains("ASUS") || board.contains("ASUSTEK")
+        })
+    }
+
     pub fn set_rgb(r: u8, g: u8, b: u8) {
+        if !is_asus_hardware() {
+            return;
+        }
         unsafe {
             let handle = CreateFileW(
                 w!(r"\\.\ATKACPI"),
