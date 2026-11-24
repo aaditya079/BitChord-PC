@@ -849,7 +849,7 @@ const RADIO_MIN: usize = 4;
 /// When direct stream is enabled, an external addon needs enough time to complete 1 search
 /// and 1 stream request (typically ~4-6 seconds). We cap it at 7.5 seconds so the listener
 /// isn't kept waiting if the provider is down, while giving legitimate addons time to answer.
-const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(7500);
+const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(15000);
 
 #[derive(Clone)]
 pub struct Backend {

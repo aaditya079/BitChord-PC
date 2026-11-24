@@ -18,7 +18,7 @@ use crate::hires::Info;
 use crate::model::Track;
 use crate::stream::Format;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a search's answer is trusted before the same song asks again.
 const MISS_MEMORY: Duration = Duration::from_secs(30 * 60);
 /// How long a server that didn't answer is left alone before it's tried again.
