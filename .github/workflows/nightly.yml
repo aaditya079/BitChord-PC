@@ -18,10 +18,26 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Check for new commits since last nightly (cron only)
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          LATEST_SHA=$(gh release view nightly --json targetCommitish -q .targetCommitish 2>/dev/null || echo "")
+          echo "Current SHA: $GITHUB_SHA, Nightly release SHA: $LATEST_SHA"
+          if [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" = "$GITHUB_SHA" ]; then
+            echo "SKIP=true" >> "$GITHUB_ENV"
+            echo "No new commits since last nightly build. Skipping."
+          fi
+
       - name: Build Windows release
+        if: env.SKIP != 'true'
         run: cargo build --release --locked
 
       - name: Stage WebView2Loader.dll
+        if: env.SKIP != 'true'
         run: |
           $dll = Get-ChildItem -Path "target\release\build\*\out\x64\WebView2Loader.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $dll) { $dll = Get-ChildItem -Path "$HOME\.cargo\registry\src\*\webview2-com-sys-*\x64\WebView2Loader.dll" -ErrorAction SilentlyContinue | Select-Object -First 1 }
@@ -31,6 +47,7 @@ jobs:
           }
 
       - name: Package nightly zip
+        if: env.SKIP != 'true'
         shell: bash
         run: |
           mkdir -p out
@@ -42,6 +59,7 @@ jobs:
           tar -a -c -f ../bitchord-nightly-windows-x86_64.zip *
 
       - name: Publish Nightly Prerelease
+        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
