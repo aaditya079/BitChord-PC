@@ -211,7 +211,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_space(8.0);
         let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
-        app_logo(ui, r, theme::with_alpha(Color32::WHITE, a));
+        app_logo(ui, r, theme::with_alpha(Color32::WHITE, a), app.app_icon);
         let resp = named(resp, "Home");
         let resp = if collapsed { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
         if resp.clicked() && !collapsed {
@@ -1010,7 +1010,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         }
         None => {
             ui.painter().rect_filled(cover, 6.0, theme::glass(0.08));
-            app_logo(ui, cover.shrink(2.0), Color32::WHITE);
+            app_logo(ui, cover.shrink(2.0), Color32::WHITE, app.app_icon);
         }
     }
 
@@ -1224,15 +1224,23 @@ fn tempo_button(app: &mut App, ui: &mut Ui, resp: egui::Response, accent: Color3
 }
 
 /// The bundled app icon fitted into the sidebar and the idle player sleeve.
-fn app_logo(ui: &Ui, r: Rect, tint: Color32) {
-    let key = egui::Id::unique("bitchord-logo");
+fn app_logo(ui: &Ui, r: Rect, tint: Color32, icon_id: &str) {
+    let ppp = ui.ctx().pixels_per_point();
+    let target_px = ((r.width().max(r.height()) * ppp).round() as u32).max(32);
+    // Supersample at 2x target resolution (clamped to 64..256) with Lanczos3 for razor-sharp anti-aliased rendering
+    let sample_px = (target_px * 2).clamp(64, 256);
+    let key = egui::Id::new(("bitchord-logo", icon_id, sample_px));
     let tex = match ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         Some(t) => t,
         None => {
-            let Ok(img) = image::load_from_memory(crate::appicon::PNG) else { return };
-            let img = img.into_rgba8();
+            let variant = crate::appicon::get(icon_id);
+            let img = variant.rgba(sample_px).or_else(|| {
+                let raw = image::load_from_memory(crate::appicon::PNG).ok()?.into_rgba8();
+                Some(image::imageops::resize(&raw, sample_px, sample_px, image::imageops::FilterType::Lanczos3))
+            });
+            let Some(img) = img else { return };
             let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-            let t = ui.ctx().load_texture("bitchord-logo", color, egui::TextureOptions::LINEAR);
+            let t = ui.ctx().load_texture(format!("bitchord-logo-{icon_id}-{sample_px}"), color, egui::TextureOptions::LINEAR);
             ui.ctx().data_mut(|d| d.insert_temp(key, t.clone()));
             t
         }
