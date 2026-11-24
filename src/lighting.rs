@@ -1,7 +1,17 @@
 //! Dynamic Ambient RGB Backlight Engine
 //!
-//! Synchronizes keyboard backlights (ASUS TUF / ROG) and gaming peripherals
-//! (OpenRGB, SteelSeries GameSense) with the current track's album art.
+//! Synchronizes keyboard backlights and gaming peripherals with the current track's album art.
+//!
+//! ### Supported Hardware Backends
+//! - **ASUS TUF / ROG Laptops**: Direct kernel ACPI (`\\.\ATKACPI`) control with strict
+//!   SMBIOS / Windows Registry hardware verification guards to ensure driver calls only run
+//!   on verified ASUS hardware.
+//! - **OpenRGB**: OpenRGB network client communicating over TCP to `localhost:6742` for all
+//!   peripherals managed by an OpenRGB instance.
+//! - **SteelSeries Engine 3**: GameSense local HTTP/JSON event protocol via `coreProps.json`.
+//!
+//! Note: Proprietary vendor SDKs such as Corsair iCUE, Razer Chroma, ASUS Aura SDK, and
+//! Logitech LIGHTSYNC are not natively embedded; users of those peripherals should use OpenRGB.
 
 /// Boosts the extracted album art color's saturation and brightness for punchy LED illumination.
 pub fn boost_color(c: egui::Color32) -> (u8, u8, u8) {
