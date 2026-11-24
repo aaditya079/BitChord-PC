@@ -312,7 +312,7 @@ fn picture(bytes: &[u8]) -> Option<Picture> {
 
 /// Write the picture under a digest of its bytes, so one image shared by an album's
 /// files is stored once. The name is what a [`COVER`] URI carries.
-fn save_cover(covers: &Path, bytes: &[u8]) -> Option<String> {
+pub fn save_cover(covers: &Path, bytes: &[u8]) -> Option<String> {
     let name = format!("{:x}.{}", sha1::Sha1::digest(bytes), image_kind(bytes)?);
     let file = covers.join(&name);
     if !file.is_file() && std::fs::create_dir_all(covers).and_then(|_| std::fs::write(&file, bytes)).is_err() {

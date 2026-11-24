@@ -36,6 +36,8 @@ struct State {
     /// Where the index is saved (the data dir's downloads.json).
     file: PathBuf,
     folder: PathBuf,
+    /// Where covers are saved (the data dir's local-covers).
+    covers: PathBuf,
     /// Songs whose file wasn't there when last looked for. They stay in the index: a
     /// folder on a drive that's away has them back when it's back.
     gone: HashSet<String>,
@@ -45,7 +47,7 @@ struct State {
 }
 
 static STATE: LazyLock<RwLock<State>> =
-    LazyLock::new(|| RwLock::new(State { index: HashMap::new(), file: PathBuf::new(), folder: default_folder(), gone: HashSet::new(), saved: Vec::new() }));
+    LazyLock::new(|| RwLock::new(State { index: HashMap::new(), file: PathBuf::new(), folder: default_folder(), covers: PathBuf::new(), gone: HashSet::new(), saved: Vec::new() }));
 
 /// Music\BitChord.
 pub fn default_folder() -> PathBuf {
@@ -58,17 +60,179 @@ pub fn default_folder() -> PathBuf {
 /// Load the index; `folder` is the saved setting (empty for the default).
 pub fn init(data_dir: &Path, folder: &str) {
     let file = data_dir.join("downloads.json");
+    let covers = data_dir.join("local-covers");
     let index = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut st = STATE.write().unwrap();
     st.index = index;
     st.file = file;
+    st.covers = covers;
     st.folder = if folder.is_empty() { default_folder() } else { PathBuf::from(folder) };
     drop(st);
-    // Which files are gone: disk work, off the UI thread.
-    std::thread::spawn(|| {
+    // Scan external files, remove gone files, and extract missing covers off the UI thread.
+    let dir = data_dir.to_owned();
+    std::thread::spawn(move || {
         let entries: Vec<(String, PathBuf)> = STATE.read().unwrap().index.iter().map(|(id, e)| (id.clone(), e.path.clone())).collect();
         set_gone(entries.into_iter().filter(|(_, p)| !p.is_file()).collect());
+        sync_external_files(&dir);
     });
+}
+
+/// Extract embedded or sibling album artwork for an audio file, saving it into `covers`.
+fn extract_cover(path: &Path, covers: &Path) -> Option<crate::model::Thumb> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext == "m4a" {
+        if let Ok(tag) = mp4ameta::Tag::read_from_path(path) {
+            if let Some(data) = tag.artwork().map(|a| a.data) {
+                if let Some(name) = crate::local::save_cover(covers, data) {
+                    return Some(crate::model::Thumb {
+                        url: format!("{}{name}", crate::local::COVER),
+                        width: 500,
+                        height: 500,
+                    });
+                }
+            }
+        }
+    }
+    // Sibling artwork files: "{stem}.jpg", "{stem}.png", "cover.jpg", "folder.jpg"
+    if let Some(stem) = path.file_stem() {
+        let parent = path.parent().unwrap_or(path);
+        let stem_str = stem.to_string_lossy();
+        for sibling_name in &[
+            format!("{stem_str}.jpg"),
+            format!("{stem_str}.jpeg"),
+            format!("{stem_str}.png"),
+            "cover.jpg".to_string(),
+            "cover.png".to_string(),
+            "folder.jpg".to_string(),
+        ] {
+            let sibling = parent.join(sibling_name);
+            if sibling.is_file() {
+                if let Ok(bytes) = std::fs::read(&sibling) {
+                    if let Some(name) = crate::local::save_cover(covers, &bytes) {
+                        return Some(crate::model::Thumb {
+                            url: format!("{}{name}", crate::local::COVER),
+                            width: 500,
+                            height: 500,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Scan the downloads directory for externally added audio files or existing files missing covers.
+pub fn sync_external_files(data_dir: &Path) {
+    let folder = folder();
+    if !folder.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&folder) else {
+        return;
+    };
+    let covers = data_dir.join("local-covers");
+    let mut updated = false;
+    let mut st = STATE.write().unwrap();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || name.ends_with(".part") {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !matches!(ext.as_str(), "mp3" | "flac" | "m4a" | "opus" | "ogg" | "wav" | "aac" | "webm") {
+            continue;
+        }
+
+        if let Some((_, existing)) = st.index.iter_mut().find(|(_, e)| e.path == path) {
+            if existing.song.as_ref().map_or(true, |s| s.thumbs.is_empty()) {
+                if let Some(thumb) = extract_cover(&path, &covers) {
+                    if let Some(song) = existing.song.as_mut() {
+                        song.thumbs = vec![thumb];
+                        updated = true;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown");
+        let (artist_name, title_name) = if let Some((artist, title)) = stem.split_once(" - ") {
+            (artist.trim(), title.trim())
+        } else {
+            ("Local Music", stem.trim())
+        };
+
+        let mut final_title = title_name.to_owned();
+        let mut final_artist = artist_name.to_owned();
+        let mut final_album = None;
+        let mut duration_ms = 0;
+
+        if ext == "m4a" {
+            if let Ok(tag) = mp4ameta::Tag::read_from_path(&path) {
+                if let Some(t) = tag.title() {
+                    final_title = t.to_owned();
+                }
+                if let Some(a) = tag.artist() {
+                    final_artist = a.to_owned();
+                }
+                if let Some(al) = tag.album() {
+                    final_album = Some(crate::model::Link { name: al.to_owned(), id: None });
+                }
+                let d = tag.duration();
+                if d.as_millis() > 0 {
+                    duration_ms = d.as_millis() as u64;
+                }
+            }
+        }
+
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.to_string_lossy().hash(&mut hasher);
+        let id = format!("local:{:016x}", hasher.finish());
+
+        let mut thumbs = Vec::new();
+        if let Some(thumb) = extract_cover(&path, &covers) {
+            thumbs.push(thumb);
+        }
+
+        let track = Track {
+            id: id.clone(),
+            title: final_title,
+            artists: vec![crate::model::Link { name: final_artist, id: None }],
+            album: final_album,
+            duration: if duration_ms > 0 { Some((duration_ms / 1000) as u32) } else { None },
+            thumbs,
+            track_nr: None,
+            plays: None,
+            music_video: false,
+            video: false,
+            explicit: false,
+        };
+
+        st.index.insert(id.clone(), Entry {
+            path,
+            duration_ms,
+            loudness_db: None,
+            stands_for: None,
+            videos: Vec::new(),
+            song: Some(track),
+        });
+        st.saved.push(id);
+        updated = true;
+    }
+    drop(st);
+    if updated {
+        write_index();
+        LOOKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Remember these songs' files as gone (unless one's been saved again meanwhile).
@@ -352,8 +516,9 @@ pub fn save(t: &Track, audio: &[u8], duration_ms: u64, loudness_db: Option<f32>,
         audio[8..12].copy_from_slice(b"M4A ");
     }
     std::fs::write(&part, &audio)?;
+    let mut saved_cover_name = None;
     if ext == "m4a"
-        && let Err(e) = tag(&part, t, cover)
+        && let Err(e) = tag(&part, t, cover.clone())
     {
         // Untagged audio still plays; keep it.
         log::warn!("couldn't tag {}: {e:#}", path.display());
@@ -361,15 +526,25 @@ pub fn save(t: &Track, audio: &[u8], duration_ms: u64, loudness_db: Option<f32>,
     std::fs::rename(&part, &path)?;
     {
         let mut st = STATE.write().unwrap();
+        if let Some(c) = &cover {
+            saved_cover_name = crate::local::save_cover(&st.covers, c);
+        }
         // Saved again, it stays the song version of the videos it was already.
         let (mut first, mut videos) = st.index.get(&t.id).map(|e| (e.stands_for.clone(), e.videos.clone())).unwrap_or_default();
         if let Some(v) = &stands_for {
             add_video(&mut first, &mut videos, v);
         }
         // Every entry keeps its song, so the Downloads page can list it later.
-        let song = Some(t.clone());
+        let mut song = t.clone();
+        if let Some(name) = saved_cover_name {
+            song.thumbs.insert(0, crate::model::Thumb {
+                url: format!("{}{name}", crate::local::COVER),
+                width: 1200,
+                height: 1200,
+            });
+        }
         st.gone.remove(&t.id);
-        st.index.insert(t.id.clone(), Entry { path: path.clone(), duration_ms, loudness_db, stands_for: first, videos, song });
+        st.index.insert(t.id.clone(), Entry { path: path.clone(), duration_ms, loudness_db, stands_for: first, videos, song: Some(song) });
         st.saved.push(t.id.clone());
     }
     write_index();

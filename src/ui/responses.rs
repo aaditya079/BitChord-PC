@@ -852,6 +852,10 @@ impl App {
         // Counted first: a song saved meanwhile is taken on again next time, not missed.
         self.downloads_seen = crate::downloads::saves();
         self.downloads = Some(crate::downloads::list());
+        let dir = self.backend.data_dir().to_owned();
+        std::thread::spawn(move || {
+            crate::downloads::sync_external_files(&dir);
+        });
     }
 
     /// The Uploads page's local half read again: the list lives in the local index,

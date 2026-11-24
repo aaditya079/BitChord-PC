@@ -845,10 +845,10 @@ const RADIO_FETCH: usize = 50;
 /// Fewer usable songs than this from a source, and the next one is asked (Mochy's
 /// rows drop under four; a shorter queue than that barely tops anything up).
 const RADIO_MIN: usize = 4;
-/// How long playback waits for the hi-res sources before falling back to YouTube. Every
-/// source is asked at once and a miss is quick (the addon answers its search fast); this
-/// bounds the ones that are slow, not the ones that don't have the track.
-const HIRES_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long playback waits for the hi-res sources before falling back to YouTube.
+/// Kept tight (2.5s) so an unresponsive or cold external addon doesn't freeze audio playback
+/// for minutes. The background quality upgrade task will continue querying in the background.
+const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
 
 #[derive(Clone)]
 pub struct Backend {
