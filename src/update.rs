@@ -26,6 +26,19 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use sha2::{Digest, Sha256};
+
+fn verify_file_sha256(path: &Path, expected_hex: &str) -> anyhow::Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    let hash = format!("{:x}", hasher.finalize());
+    if !hash.eq_ignore_ascii_case(expected_hex.trim()) {
+        anyhow::bail!("SHA-256 checksum mismatch for {}: expected {}, got {}", path.display(), expected_hex.trim(), hash);
+    }
+    log::info!("SHA-256 checksum verified for {}: {}", path.display(), hash);
+    Ok(())
+}
 
 const LATEST: &str = "https://api.github.com/repos/aaditya079/BitChord-PC/releases/latest";
 const ALL_RELEASES: &str = "https://api.github.com/repos/aaditya079/BitChord-PC/releases";
@@ -327,11 +340,23 @@ impl Updater {
     /// list of them, from which the newest stable one, or on the nightly channel the newest
     /// stable or nightly one. Other prereleases (test builds) are never picked.
     fn pick_release(feed: serde_json::Value, nightly: bool) -> Option<serde_json::Value> {
-        let serde_json::Value::Array(list) = feed else { return Some(feed) };
+        let serde_json::Value::Array(list) = feed else {
+            if feed["prerelease"].as_bool().unwrap_or(false) && !nightly {
+                return None;
+            }
+            return Some(feed);
+        };
         let tag = |r: &serde_json::Value| r["tag_name"].as_str().unwrap_or_default().to_owned();
         list.into_iter()
             .filter(|r| !r["draft"].as_bool().unwrap_or(false))
-            .filter(|r| if r["prerelease"].as_bool().unwrap_or(false) { nightly && is_nightly(&tag(r)) } else { true })
+            .filter(|r| {
+                let is_prerelease = r["prerelease"].as_bool().unwrap_or(false);
+                if !nightly {
+                    !is_prerelease
+                } else {
+                    is_nightly(&tag(r)) || !is_prerelease
+                }
+            })
             .reduce(|best, r| if newer(&tag(&r), &tag(&best)) { r } else { best })
     }
 
@@ -366,6 +391,9 @@ impl Updater {
             return Ok(State::UpToDate);
         };
         let url = asset["browser_download_url"].as_str().ok_or_else(|| anyhow::anyhow!("asset has no URL"))?;
+        if !url.starts_with("https://") {
+            anyhow::bail!("insecure non-https update URL rejected: {url}");
+        }
         // A copy a package manager owns (the .deb or the Arch package): apt or pacman
         // own the files, so it doesn't download anything, it only points you at the new
         // package to install over it.
@@ -400,6 +428,40 @@ impl Updater {
                 anyhow::bail!("download incomplete ({got} of {size} bytes)");
             }
             std::fs::rename(&part, &path)?;
+        }
+
+        // Verify SHA-256 against published digest or checksum asset before touching any binary
+        let mut expected_sha256 = asset["digest"]
+            .as_str()
+            .and_then(|d| d.strip_prefix("sha256:"))
+            .map(|s| s.to_ascii_lowercase());
+
+        if expected_sha256.is_none() {
+            if let Some(assets) = release["assets"].as_array() {
+                if let Some(sum_asset) = assets.iter().find(|a| {
+                    let name = a["name"].as_str().unwrap_or_default();
+                    name == "SHA256SUMS" || name == "SHA256SUMS.txt" || name == format!("{want}.sha256")
+                }) {
+                    if let Some(sum_url) = sum_asset["browser_download_url"].as_str().filter(|u| u.starts_with("https://")) {
+                        if let Ok(resp) = http.get(sum_url).send().await {
+                            if let Ok(text) = resp.error_for_status()?.text().await {
+                                for line in text.lines() {
+                                    if line.contains(&want) {
+                                        if let Some(hex) = line.split_whitespace().next().filter(|h| h.len() == 64) {
+                                            expected_sha256 = Some(hex.to_ascii_lowercase());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(expected) = expected_sha256 {
+            verify_file_sha256(&path, &expected)?;
         }
         // Old downloads are no longer needed.
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
