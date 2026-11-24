@@ -61,7 +61,7 @@ const RACE_BUDGET: Duration = Duration::from_secs(19);
 /// The Monochrome-first try may not eat the addon's window: a server that speaks both
 /// protocols answers its search in a moment, and one that doesn't must leave the seconds
 /// the addon protocol needs (its search and `/stream` both take seconds on a cold lookup).
-const MONO_FIRST: Duration = Duration::from_secs(5);
+const MONO_FIRST: Duration = Duration::from_millis(1500);
 /// The size given a stream whose addon and server don't say how big it is: room enough
 /// for ranged reads while the download finds the real end.
 pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
@@ -166,6 +166,7 @@ pub struct Client {
     base: String,
     manifest: tokio::sync::Mutex<Option<Manifest>>,
     searches: tokio::sync::Mutex<SearchCache>,
+    not_mono: AtomicBool,
 }
 
 struct Manifest {
@@ -226,7 +227,7 @@ impl Client {
         if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none_or(str::is_empty) {
             return None;
         }
-        Some(Self { base, manifest: Default::default(), searches: Default::default() })
+        Some(Self { base, manifest: Default::default(), searches: Default::default(), not_mono: AtomicBool::new(false) })
     }
 
     /// The addon's host, for a log line (the link's path may carry a token).
@@ -260,7 +261,13 @@ impl Client {
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut last_err = None;
         for &(search_atmos, prefer_atmos) in passes {
+            if atmos && !out.is_empty() && out.iter().any(|c| c.atmos) {
+                break;
+            }
             for query in &queries {
+                if !out.is_empty() {
+                    break;
+                }
                 let candidates = match self.search(http, &manifest, query, search_atmos).await {
                     Ok(c) => c,
                     Err(e) => { last_err = Some(e); continue; }
@@ -653,6 +660,9 @@ fn usable(stream: &Stream) -> bool {
 /// speaks both gets its answer (which carries loudness data the addon protocol doesn't)
 /// ahead of the addon round-trips. `None` leaves the addon protocol to it.
 async fn find_on_monochrome(http: &reqwest::Client, client: &Client, track: &crate::model::Track) -> Option<Stream> {
+    if client.not_mono.load(Ordering::Relaxed) {
+        return None;
+    }
     let query = crate::providers::Query::of(track);
     let server = crate::providers::Server {
         url: client.base.clone(),
@@ -661,7 +671,11 @@ async fn find_on_monochrome(http: &reqwest::Client, client: &Client, track: &cra
     };
     // resolve_on handles its own caching (separate from the addon search cache) and
     // identifying the kind if needed.
-    let found = crate::providers::Monochrome::resolve_addon_as_mono(http, &server, &query).await?;
+    let found = crate::providers::Monochrome::resolve_addon_as_mono(http, &server, &query).await;
+    if found.is_none() {
+        client.not_mono.store(true, Ordering::Relaxed);
+    }
+    let found = found?;
     Some(Stream { url: found.url, size: found.size, duration_ms: found.duration_ms, format: found.format, info: found.info, data: None })
 }
 

@@ -846,9 +846,10 @@ const RADIO_FETCH: usize = 50;
 /// rows drop under four; a shorter queue than that barely tops anything up).
 const RADIO_MIN: usize = 4;
 /// How long playback waits for the hi-res sources before falling back to YouTube.
-/// Kept tight (2.5s) so an unresponsive or cold external addon doesn't freeze audio playback
-/// for minutes. The background quality upgrade task will continue querying in the background.
-const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
+/// When direct stream is enabled, an external addon needs enough time to complete 1 search
+/// and 1 stream request (typically ~4-6 seconds). We cap it at 7.5 seconds so the listener
+/// isn't kept waiting if the provider is down, while giving legitimate addons time to answer.
+const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(7500);
 
 #[derive(Clone)]
 pub struct Backend {
@@ -3061,7 +3062,7 @@ impl Backend {
                     if hires_clients.is_empty() {
                         continue;
                     }
-                    tokio::time::timeout(HIRES_WAIT, self.from_hires(&hires_clients, &track, false))
+                    tokio::time::timeout(std::time::Duration::from_secs(12), self.from_hires(&hires_clients, &track, false))
                         .await
                         .ok()
                         .flatten()
