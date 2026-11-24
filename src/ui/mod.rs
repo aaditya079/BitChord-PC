@@ -901,6 +901,8 @@ pub struct App {
     updater: Option<crate::update::Updater>,
     /// What Settings › Storage measures and clears.
     storage: crate::cache::Storage,
+    /// Automatically check, download, and install updates on exit.
+    pub auto_update: bool,
     /// Updates from the nightly channel rather than stable.
     update_nightly: bool,
     /// When the last automatic update check ran (app time, s).
@@ -1292,6 +1294,7 @@ impl App {
             pinned: get("pinned_playlists").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
             coll_search: None,
             update_checked: None,
+            auto_update: get("auto_update").is_none_or(|v| v == "1"),
             // A nightly build stays on nightlies until told otherwise.
             update_nightly: get("update_channel").map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
             update_announced: false,
@@ -2543,6 +2546,7 @@ impl eframe::App for App {
         if let Some(v) = &self.update_seen {
             storage.set_string("update_seen", v.clone());
         }
+        storage.set_string("auto_update", b(self.auto_update));
         storage.set_string("update_channel", if self.update_nightly { "nightly" } else { "stable" }.to_owned());
         storage.set_string("discord_enabled", b(self.discord_enabled));
         storage.set_string("discord", serde_json::to_string(&self.discord_prefs).unwrap_or_default());
@@ -2635,8 +2639,8 @@ impl eframe::App for App {
             }
             link.shutdown();
         }
-        // A downloaded update installs only when the user restarted for it; nothing is
-        // installed behind their back as the app closes.
+        // A downloaded update installs automatically when the user restarted for it
+        // or when automatic updates are enabled and the app is closed.
         let update_ready = self.updater.as_ref().is_some_and(|u| matches!(u.state(), crate::update::State::Ready { .. }));
         if update_ready {
             // eframe has saved and flushed app.ron by now (its save runs before
@@ -2646,9 +2650,10 @@ impl eframe::App for App {
             crate::guard_settings(&self.backend.data_dir());
         }
         if let Some(u) = &self.updater
-            && self.restart_for_update
+            && update_ready
+            && (self.restart_for_update || self.auto_update)
         {
-            u.install(true);
+            u.install(self.restart_for_update);
         }
         if self.restart_app && !update_ready {
             relaunch();

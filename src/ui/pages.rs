@@ -3042,11 +3042,15 @@ fn live_mono_servers(app: &App) -> String {
 
 /// Settings › General › Updates: the channel to take them from, and a check on demand.
 /// A nightly build of the newest changes is published every night there are some; it can
-/// break at any time. Stable follows the finished releases only.
+/// Settings › Updates: check for new releases and pick between stable and nightly.
 fn settings_updates(app: &mut App, ui: &mut Ui) {
     use crate::update::State;
     let mut channel = None;
     settings_section(ui, "Updates", None, None, |ui| {
+        setting_row(ui, "Automatic updates", Some("Periodically checks for updates in the background, downloads them silently, and installs when BitChord closes."), |ui| {
+            toggle(ui, &mut app.auto_update, "Automatic updates");
+        });
+        divider(ui);
         let desc = "Stable: finished releases, ready for everyday listening.\nNightly: experimental. It can break at any time.";
         setting_row(ui, "Update channel", Some(desc), |ui| {
             let btn = dropdown_button(ui, if app.update_nightly { "Nightly" } else { "Stable" }, 140.0, "Update channel");
