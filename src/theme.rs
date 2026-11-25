@@ -467,10 +467,92 @@ pub fn anim_bool_timed(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt:
     ease_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * speed()))
 }
 
+/// Subtle specular frosted-glass inner border for cards, drawers, and panels.
+pub fn glass_stroke() -> egui::Stroke {
+    let alpha = if light() { 42 } else { 28 };
+    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, alpha))
+}
+
 /// [`anim_bool`] that eases in and out, for a fold that opens and closes (Discord's
 /// settings): the change of direction should never read as a snap.
 pub fn anim_bool_soft(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool, secs: f32) -> f32 {
     ease_in_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * speed()))
+}
+
+/// Analytical damped harmonic oscillator for fluid, non-linear UI physics.
+#[derive(Clone, Copy, Debug)]
+pub struct Spring {
+    pub value: f32,
+    pub velocity: f32,
+    pub target: f32,
+    pub stiffness: f32,
+    pub damping: f32,
+}
+
+impl Spring {
+    pub const fn new(val: f32, stiffness: f32, damping: f32) -> Self {
+        Self { value: val, velocity: 0.0, target: val, stiffness, damping }
+    }
+
+    /// Advances the oscillator by `dt` seconds using sub-stepped semi-implicit Euler
+    /// integration so stiff springs stay stable at any frame rate. Returns `true` if
+    /// still moving.
+    pub fn update(&mut self, dt: f32) -> bool {
+        let mut remaining = dt.clamp(0.0, 0.05);
+        if remaining <= 0.0 {
+            return !self.settled();
+        }
+        const MAX_STEP: f32 = 1.0 / 120.0;
+        while remaining > 0.0 {
+            let step = remaining.min(MAX_STEP);
+            let displacement = self.value - self.target;
+            let accel = -self.stiffness * displacement - self.damping * self.velocity;
+            self.velocity += accel * step;
+            self.value += self.velocity * step;
+            remaining -= step;
+        }
+        if self.settled() {
+            self.value = self.target;
+            self.velocity = 0.0;
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn settled(&self) -> bool {
+        (self.value - self.target).abs() < 0.0005 && self.velocity.abs() < 0.001
+    }
+}
+
+/// Animates toward `target` using a damped spring stored in egui's temp memory.
+/// Respects Reduce Motion (`speed() == 0.0`) and stops requesting repaints once settled.
+pub fn spring(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, target: f32, stiffness: f32, damping: f32) -> f32 {
+    if speed() == 0.0 {
+        return target;
+    }
+    let key = egui::Id::unique(id);
+    let dt = ctx.input(|i| i.unstable_dt).clamp(1.0 / 240.0, 0.05);
+    let mut s = ctx.data(|d| d.get_temp::<Spring>(key)).unwrap_or_else(|| Spring::new(target, stiffness, damping));
+    s.target = target;
+    s.stiffness = stiffness;
+    s.damping = damping;
+    if s.update(dt) {
+        ctx.request_repaint();
+    }
+    let val = s.value;
+    ctx.data_mut(|d| d.insert_temp(key, s));
+    val
+}
+
+/// Snappy iOS-style spring for panels, drawers, and toggles.
+pub fn spring_bool(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool) -> f32 {
+    spring(ctx, id, if on { 1.0 } else { 0.0 }, 240.0, 24.0)
+}
+
+/// Organic spring with a subtle bounce for hover cards and interactive pops.
+pub fn spring_bouncy(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, target: f32) -> f32 {
+    spring(ctx, id, target, 280.0, 19.0)
 }
 
 // ------------------------------------------------------------------ type
@@ -1122,7 +1204,33 @@ fn visuals() -> egui::Visuals {
 
 #[cfg(test)]
 mod tests {
-    // Both tests are Linux's (the portal); on other systems there'd be nothing to use.
+    use super::*;
+
+    #[test]
+    fn spring_converges_and_settles_to_target() {
+        let mut s = Spring::new(0.0, 240.0, 24.0);
+        s.target = 1.0;
+        let mut moving = true;
+        for _ in 0..180 {
+            moving = s.update(1.0 / 60.0);
+            if !moving {
+                break;
+            }
+        }
+        assert!(!moving, "spring should settle within 3 seconds");
+        assert!((s.value - 1.0).abs() < f32::EPSILON);
+        assert_eq!(s.velocity, 0.0);
+    }
+
+    #[test]
+    fn spring_remains_stable_on_large_dt_spikes() {
+        let mut s = Spring::new(0.0, 280.0, 19.0);
+        s.target = 1.0;
+        s.update(5.0);
+        assert!(s.value.is_finite());
+        assert!(s.value >= 0.0 && s.value <= 2.0);
+    }
+
     #[cfg(target_os = "linux")]
     use super::*;
 

@@ -820,14 +820,16 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     const H: f32 = 56.0;
     let w = (full.width() - 24.0).min(668.0);
     let cap = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 16.0 - H), vec2(w, H));
+    let accent = app.accent_color();
     let ctx = ui.ctx().clone();
+    paint_player_glow(&ctx, ui.painter(), cap, accent);
     widgets::soft_shadow(ui, cap, H / 2.0, 20.0, 0.45);
     // Frosted: the page's colours show through a milky pane, with a lit top half and
     // a bright rim standing in for the blur egui can't do.
     ui.painter().rect_filled(cap, H / 2.0, theme::panel(0.88));
     let top = Rect::from_min_max(cap.min, pos2(cap.max.x, cap.min.y + H * 0.55));
     ui.painter().rect_filled(top, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, theme::glass(0.07));
-    ui.painter().rect_stroke(cap, H / 2.0, egui::Stroke::new(1.0, theme::glass(0.2)), egui::StrokeKind::Inside);
+    ui.painter().rect_stroke(cap, H / 2.0, theme::glass_stroke(), egui::StrokeKind::Inside);
     ui.painter().hline(cap.x_range().shrink(26.0), cap.top() + 1.0, egui::Stroke::new(1.0, theme::glass(0.24)));
 
     let status = app.audio.status.clone();
@@ -840,7 +842,6 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     };
     let enabled = track.is_some();
     let playing = app.playing();
-    let accent = app.accent_color();
     let cy = cap.center().y;
     let narrow = cap.width() < 550.0;
     let pad = 16.0;
@@ -1077,7 +1078,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let band = Rect::from_min_max(pos2(slider.left() - 3.0, cy - 14.0), pos2(vol_r.right(), cy + 14.0));
     let open = hover(vol_r) || (was && (hover(band) || ui.input(|i| i.pointer.any_down())));
     ui.data_mut(|d| d.insert_temp(open_id, open));
-    let reveal = theme::anim_bool(&ctx, "bar-vol-reveal", open, 0.15);
+    let reveal = theme::spring_bool(&ctx, "bar-vol-reveal", open).clamp(0.0, 1.0);
     let rbtn = |ui: &mut Ui, i: usize, key: &str, name: &str| -> egui::Response {
         let r = Rect::from_center_size(pos2(rslot(i), cy), Vec2::splat(28.0));
         let resp = ui.interact(r, ui.scope_id().with(("bar-r", key)), Sense::click());
@@ -1223,6 +1224,37 @@ fn tempo_button(app: &mut App, ui: &mut Ui, resp: egui::Response, accent: Color3
     });
 }
 
+/// Cached 128x128 offscreen radial glow built once per accent color change, painted behind
+/// the floating player capsule for subtle Liquid Glass depth at ~0% per-frame GPU cost.
+fn paint_player_glow(ctx: &egui::Context, painter: &egui::Painter, cap: Rect, accent: Color32) {
+    let rgb = [accent.r(), accent.g(), accent.b()];
+    let id = egui::Id::unique("player-glow-cache");
+    let tex = match ctx.data(|d| d.get_temp::<([u8; 3], egui::TextureHandle)>(id)) {
+        Some((cached_rgb, t)) if cached_rgb == rgb => t,
+        _ => {
+            const N: usize = 128;
+            let mut pixels = Vec::with_capacity(N * N);
+            let half = (N as f32 - 1.0) * 0.5;
+            for y in 0..N {
+                let dy = (y as f32 - half) / half;
+                for x in 0..N {
+                    let dx = (x as f32 - half) / half;
+                    let dist = (dx * dx + dy * dy).sqrt().min(1.0);
+                    let falloff = (1.0 - dist).powf(2.2);
+                    let a = (falloff * 255.0).round() as u8;
+                    pixels.push(Color32::from_rgba_unmultiplied(rgb[0], rgb[1], rgb[2], a));
+                }
+            }
+            let img = egui::ColorImage { size: [N, N], source_size: vec2(N as f32, N as f32), pixels };
+            let t = ctx.load_texture("player-glow", img, egui::TextureOptions::LINEAR);
+            ctx.data_mut(|d| d.insert_temp(id, (rgb, t.clone())));
+            t
+        }
+    };
+    let glow_rect = cap.expand2(vec2(56.0, 28.0));
+    painter.image(tex.id(), glow_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), theme::with_alpha(Color32::WHITE, 0.20));
+}
+
 /// The bundled app icon fitted into the sidebar and the idle player sleeve.
 fn app_logo(ui: &Ui, r: Rect, tint: Color32, icon_id: &str) {
     let key = egui::Id::new(("bitchord-logo", icon_id));
@@ -1291,7 +1323,7 @@ pub(super) fn volume_slider(app: &mut App, ui: &mut Ui, slider: Rect, salt: &str
     let vol = app.audio.volume();
     let vresp = ui.interact(slider, ui.scope_id().with(salt), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::PointingHand);
     vresp.widget_info(|| egui::WidgetInfo::slider(true, vol as f64, "Volume"));
-    let vh = theme::anim_bool(ui.ctx(), ui.scope_id().with((salt, "h")), vresp.hovered() || vresp.dragged(), 0.15);
+    let vh = theme::spring_bool(ui.ctx(), ui.scope_id().with((salt, "h")), vresp.hovered() || vresp.dragged()).clamp(0.0, 1.0);
     let track_r = Rect::from_center_size(slider.center(), vec2(slider.width(), 4.0));
     ui.painter().rect_filled(track_r, 2.0, theme::glass(0.15));
     let fill = Rect::from_min_size(track_r.min, vec2(track_r.width() * vol, 4.0));
