@@ -1621,6 +1621,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
     let plain = |_: usize, _: &Track| None;
     match tab {
         LibTab::History => {
+            listening_stats_card(app, ui);
             if app.history.is_none() {
                 placeholder(app, ui, now, 1, 48.0);
                 return;
@@ -1712,6 +1713,47 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
 /// account's cloud library — playable on any device, but YouTube Music converts what it
 /// takes, so a FLAC doesn't stay lossless. Local music plays straight from this
 /// computer, each file as it is.
+fn listening_stats_card(app: &App, ui: &mut Ui) {
+    let summary = app.listening.stats_summary();
+    if summary.total_plays == 0 {
+        return;
+    }
+    let hours = summary.total_secs / 3600;
+    let mins = (summary.total_secs % 3600) / 60;
+    let time_str = if hours > 0 { format!("{hours}h {mins}m") } else { format!("{mins}m") };
+    egui::Frame::new()
+        .fill(theme::glass(0.05))
+        .stroke(egui::Stroke::new(1.0, theme::glass(0.14)))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Listening Replay").font(theme::semibold(15.0)).color(theme::text()));
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} plays · {} · {} tracks · {} artists",
+                        summary.total_plays, time_str, summary.unique_tracks, summary.unique_artists
+                    ))
+                    .font(theme::regular(13.0))
+                    .color(theme::text_dim()),
+                );
+            });
+            if !summary.top_artists.is_empty() {
+                ui.add_space(6.0);
+                let top_line = summary
+                    .top_artists
+                    .iter()
+                    .take(3)
+                    .map(|(name, secs, _)| format!("{name} ({}m)", (*secs / 60).max(1)))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ");
+                ui.label(egui::RichText::new(format!("Top artists: {top_line}")).font(theme::regular(12.5)).color(theme::text_dim()));
+            }
+        });
+    ui.add_space(12.0);
+}
+
 fn uploads_tab(app: &mut App, ui: &mut Ui, now: f64, rows: &Rows) {
     let plain = |_: usize, _: &Track| None;
     ui.label(RichText::new("Upload to YouTube Music").font(theme::bold(15.0)).color(theme::text()));
@@ -2717,6 +2759,24 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
             }
             ui.horizontal(|ui| {
                 setting_row(ui, kind.label(), Some(source_blurb(kind)), |ui| {
+                    let health_pid = match kind {
+                        crate::backend::MusicSource::Monochrome => Some(crate::providers::ProviderId::Monochrome),
+                        crate::backend::MusicSource::JioSaavn => Some(crate::providers::ProviderId::JioSaavn),
+                        _ => None,
+                    };
+                    if let Some(pid) = health_pid {
+                        match crate::providers::health(pid) {
+                            crate::providers::HealthState::Healthy(ms) => {
+                                ui.label(egui::RichText::new(format!("Healthy ({ms} ms)")).font(theme::regular(12.0)).color(Color32::from_rgb(80, 200, 120)));
+                                ui.add_space(8.0);
+                            }
+                            crate::providers::HealthState::Degraded(_) => {
+                                ui.label(egui::RichText::new("Degraded").font(theme::regular(12.0)).color(Color32::from_rgb(235, 130, 80)));
+                                ui.add_space(8.0);
+                            }
+                            crate::providers::HealthState::Idle => {}
+                        }
+                    }
                     let mut on = match kind {
                         crate::backend::MusicSource::Addons => app.addons_on,
                         crate::backend::MusicSource::MonoServers => app.mono_servers_on,

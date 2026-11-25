@@ -324,6 +324,47 @@ pub fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct StatsSummary {
+    pub total_plays: usize,
+    pub total_secs: u64,
+    pub unique_tracks: usize,
+    pub unique_artists: usize,
+    /// `(artist_name, total_secs, play_count)` sorted descending by listening time.
+    pub top_artists: Vec<(String, u32, u32)>,
+}
+
+impl Listening {
+    pub fn stats_summary(&self) -> StatsSummary {
+        use std::collections::{HashMap, HashSet};
+        let mut total_secs: u64 = 0;
+        let mut tracks = HashSet::new();
+        let mut artists: HashMap<String, (u32, u32)> = HashMap::new();
+        for ev in &self.events {
+            total_secs += ev.played as u64;
+            tracks.insert(ev.track.id.as_str());
+            for a in &ev.track.artists {
+                if !a.name.is_empty() {
+                    let entry = artists.entry(a.name.clone()).or_insert((0, 0));
+                    entry.0 = entry.0.saturating_add(ev.played);
+                    entry.1 = entry.1.saturating_add(1);
+                }
+            }
+        }
+        let unique_artists = artists.len();
+        let mut top_artists: Vec<(String, u32, u32)> = artists.into_iter().map(|(n, (s, c))| (n, s, c)).collect();
+        top_artists.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+        top_artists.truncate(5);
+        StatsSummary {
+            total_plays: self.events.len(),
+            total_secs,
+            unique_tracks: tracks.len(),
+            unique_artists,
+            top_artists,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +511,20 @@ mod tests {
         let back: Listening = serde_json::from_slice(&json).unwrap();
         assert_eq!(back.events.len(), 1);
         assert_eq!(back.events[0].track.thumbs[0].url, "https://example/t");
+    }
+
+    #[test]
+    fn stats_summary_aggregates_plays_and_top_artists() {
+        let mut l = Listening::default();
+        l.note_left(song("s1", "Artist A", Some(200)), at(0.0), 120.0);
+        l.note_left(song("s2", "Artist A", Some(200)), at(1.0), 80.0);
+        l.note_left(song("s3", "Artist B", Some(200)), at(2.0), 60.0);
+        let summary = l.stats_summary();
+        assert_eq!(summary.total_plays, 3);
+        assert_eq!(summary.total_secs, 260);
+        assert_eq!(summary.unique_tracks, 3);
+        assert_eq!(summary.unique_artists, 2);
+        assert_eq!(summary.top_artists[0].0, "Artist A");
+        assert_eq!(summary.top_artists[0].1, 200);
     }
 }
