@@ -63,7 +63,11 @@ impl App {
                 AudioEvent::Finished { generation } if generation == self.generation => {
                     // The queue keeps the last song selected even when its stream has ended.
                     self.discord_finished = Some(generation);
-                    if !self.jam.follows() {
+                    if self.sleep_after_track {
+                        self.sleep_after_track = false;
+                        self.sleep_until = None;
+                        self.toast("Sleep timer paused playback");
+                    } else if !self.jam.follows() {
                         if self.repeats_one() {
                             self.play_current();
                         } else {
@@ -73,7 +77,7 @@ impl App {
                 }
                 AudioEvent::Finished { .. } => {}
                 // Crossfade into the next song; repeat-one and the end of the queue wait for the end.
-                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() && !self.repeats_one() => {
+                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() && !self.repeats_one() && !self.sleep_after_track => {
                     // Automix: the next song eases in under this one, which keeps the
                     // player until the blend has given the next song the louder half
                     // (see `MixFrom`).

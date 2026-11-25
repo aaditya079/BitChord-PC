@@ -3350,6 +3350,14 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                 crate::lighting::set_experimental_lighting(hardware_rgb);
             }
         });
+        if hardware_rgb {
+            let mut beat_rgb = crate::lighting::is_beat_reactive_enabled();
+            setting_row(ui, "Beat-reactive lighting", Some("Pulse keyboard and peripheral brightness in sync with audio loudness (rate-limited for hardware safety)."), |ui| {
+                if toggle(ui, &mut beat_rgb, "Beat-reactive lighting").changed() {
+                    crate::lighting::set_beat_reactive(beat_rgb);
+                }
+            });
+        }
         divider(ui);
         setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing and on the album page, looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music, remembered on disk so each song asks once."), |ui| {
             if toggle(ui, &mut app.animated_covers, "Animated covers").changed() {
