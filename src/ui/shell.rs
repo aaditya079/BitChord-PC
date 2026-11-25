@@ -1334,6 +1334,8 @@ pub fn queue_drawer(app: &mut App, ui: &mut Ui) {
             // drawer's frame keeps off the window's edge only what its scroll bar needs,
             // so the row inset in queue_list gives this header its breathing room back.
             ui.add_space(super::titlebar::right_gap(ui.ctx(), ui.max_rect(), 14.0));
+            // Sleep timer menu in queue drawer header.
+            sleep_timer_button(app, ui);
             // Left of Close, with more in the queue than the song playing.
             if app.queue.tracks.len() > usize::from(app.queue.index.is_some()) && icon_button(ui, icon::TRASH_2, 15.0, "Clear queue", false).clicked() {
                 app.actions.push(Action::QueueClear);
@@ -1345,6 +1347,58 @@ pub fn queue_drawer(app: &mut App, ui: &mut Ui) {
     });
     ui.add_space(8.0);
     queue_list(app, ui, "drawer", 14.0);
+}
+
+fn sleep_timer_button(app: &mut App, ui: &mut Ui) {
+    let active = app.sleep_until.is_some() || app.sleep_after_track;
+    let tip = if app.sleep_after_track {
+        "Sleep timer: end of track".to_owned()
+    } else if let Some(until) = app.sleep_until {
+        let secs = until.saturating_duration_since(std::time::Instant::now()).as_secs();
+        format!("Sleep timer: {}m {:02}s left", secs / 60, secs % 60)
+    } else {
+        "Sleep timer".to_owned()
+    };
+    let label = if app.sleep_after_track {
+        "End".to_owned()
+    } else if let Some(until) = app.sleep_until {
+        let mins = (until.saturating_duration_since(std::time::Instant::now()).as_secs() + 59) / 60;
+        format!("{mins}m")
+    } else {
+        "Sleep".to_owned()
+    };
+    let resp = ui
+        .add(
+            egui::Button::new(
+                egui::RichText::new(label)
+                    .font(theme::semibold(12.0))
+                    .color(if active { app.accent_color() } else { theme::text_dim() }),
+            )
+            .fill(theme::glass(if active { 0.14 } else { 0.06 }))
+            .corner_radius(8.0),
+        )
+        .on_hover_text(tip)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(140.0);
+        if ui.button("Off").clicked() {
+            app.sleep_until = None;
+            app.sleep_after_track = false;
+            ui.close();
+        }
+        for mins in [15u64, 30, 45, 60] {
+            if ui.button(format!("{mins} minutes")).clicked() {
+                app.sleep_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(mins * 60));
+                app.sleep_after_track = false;
+                ui.close();
+            }
+        }
+        if ui.button("End of current track").clicked() {
+            app.sleep_until = None;
+            app.sleep_after_track = true;
+            ui.close();
+        }
+    });
 }
 
 /// "Playing from playlist", and its name, which opens it.

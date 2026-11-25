@@ -903,6 +903,8 @@ pub struct App {
     storage: crate::cache::Storage,
     /// Automatically check, download, and install updates on exit.
     pub auto_update: bool,
+    pub sleep_until: Option<std::time::Instant>,
+    pub sleep_after_track: bool,
     /// Updates from the nightly channel rather than stable.
     update_nightly: bool,
     /// When the last automatic update check ran (app time, s).
@@ -1295,6 +1297,8 @@ impl App {
             coll_search: None,
             update_checked: None,
             auto_update: get("auto_update").is_none_or(|v| v == "1"),
+            sleep_until: None,
+            sleep_after_track: false,
             // A nightly build stays on nightlies until told otherwise.
             update_nightly: get("update_channel").map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
             update_announced: false,
@@ -2233,6 +2237,19 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if let Some(until) = self.sleep_until
+            && std::time::Instant::now() >= until
+        {
+            self.sleep_until = None;
+            self.sleep_after_track = false;
+            if self.playing() {
+                self.toggle();
+            }
+            self.toast("Sleep timer paused playback");
+        }
+        if self.playing() {
+            crate::lighting::sync_music_rgb(self.accent, self.audio.status.level());
+        }
         if self.window_hidden {
             // Hidden to the tray or minimized: nothing decodes for.
             if self.video.take().is_some() {

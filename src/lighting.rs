@@ -27,6 +27,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 static EXPERIMENTAL_LIGHTING_ENABLED: AtomicBool = AtomicBool::new(false);
+static BEAT_REACTIVE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enables or disables experimental ambient lighting backends.
 /// Default is disabled (`false`).
@@ -37,6 +38,16 @@ pub fn set_experimental_lighting(enabled: bool) {
 /// Returns whether experimental ambient lighting backends are enabled.
 pub fn is_experimental_lighting_enabled() -> bool {
     EXPERIMENTAL_LIGHTING_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enables or disables audio-reactive brightness pulsing for hardware RGB.
+pub fn set_beat_reactive(enabled: bool) {
+    BEAT_REACTIVE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether beat-reactive hardware RGB modulation is enabled.
+pub fn is_beat_reactive_enabled() -> bool {
+    BEAT_REACTIVE_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Live diagnostic telemetry for ambient lighting backends.
@@ -142,14 +153,34 @@ fn rate_limiter() -> &'static Mutex<RateLimiter> {
     })
 }
 
+/// Modulates boosted RGB brightness by normalized audio energy (`0.0..1.0`).
+pub fn modulate_beat_rgb(rgb: (u8, u8, u8), level: f32) -> (u8, u8, u8) {
+    let scale = (0.30 + 0.70 * level.clamp(0.0, 1.0)).clamp(0.25, 1.0);
+    (
+        (rgb.0 as f32 * scale).round() as u8,
+        (rgb.1 as f32 * scale).round() as u8,
+        (rgb.2 as f32 * scale).round() as u8,
+    )
+}
+
 /// Dispatches the boosted color to all available hardware backends asynchronously,
 /// rate-limited to at most once per 250ms and deduplicated against the last color.
 pub fn sync_ambient_rgb(c: egui::Color32) {
+    dispatch_rgb(boost_color(c));
+}
+
+/// Dispatches beat-modulated hardware RGB when both ambient and beat-reactive modes are enabled.
+pub fn sync_music_rgb(c: egui::Color32, level: f32) {
+    if !is_experimental_lighting_enabled() || !is_beat_reactive_enabled() {
+        return;
+    }
+    dispatch_rgb(modulate_beat_rgb(boost_color(c), level));
+}
+
+fn dispatch_rgb((r, g, b): (u8, u8, u8)) {
     if !is_experimental_lighting_enabled() {
         return;
     }
-
-    let (r, g, b) = boost_color(c);
 
     // Rate-limiting and color deduplication check
     {
@@ -510,5 +541,13 @@ mod tests {
         assert!(r > 0 || g > 0 || b > 0);
         let (r2, g2, b2) = boost_color(egui::Color32::from_rgb(255, 0, 0));
         assert_eq!((r2, g2, b2), (255, 0, 0));
+    }
+
+    #[test]
+    fn test_beat_reactive_modulation() {
+        let quiet = modulate_beat_rgb((200, 100, 50), 0.0);
+        let peak = modulate_beat_rgb((200, 100, 50), 1.0);
+        assert_eq!(quiet, (60, 30, 15));
+        assert_eq!(peak, (200, 100, 50));
     }
 }
