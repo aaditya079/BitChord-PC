@@ -18,6 +18,7 @@ pub use crate::stream::TrackDecoder;
 
 pub mod eq;
 pub mod limiter;
+pub mod spectrum;
 pub mod tempo;
 
 pub enum AudioCmd {
@@ -95,6 +96,8 @@ pub struct AudioStatus {
     log_volume: AtomicBool,
     /// Smoothed output loudness 0..1 (f32 bits), for audio-reactive visuals.
     level: AtomicU32,
+    /// 16-band real-time spectrum magnitudes 0..1 (f32 bits) for visualizers and beat sync.
+    spectrum: [AtomicU32; spectrum::BANDS],
     /// How far the output device runs behind the position (its buffer), in ms.
     latency_ms: AtomicU32,
     /// Crossfade length in ms; 0 = off.
@@ -197,6 +200,19 @@ impl AudioStatus {
 
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    pub fn spectrum(&self) -> [f32; spectrum::BANDS] {
+        std::array::from_fn(|i| f32::from_bits(self.spectrum[i].load(Ordering::Relaxed)))
+    }
+
+    /// Average normalized energy in the sub-bass / kick bands (60–135 Hz).
+    pub fn bass_energy(&self) -> f32 {
+        let mut sum = 0.0;
+        for i in 0..3 {
+            sum += f32::from_bits(self.spectrum[i].load(Ordering::Relaxed));
+        }
+        sum / 3.0
     }
 
     fn set_position(&self, ms: u64) {
@@ -391,6 +407,7 @@ struct Meter<S> {
     analysis: Arc<OnceLock<Option<f32>>>,
     analysis_acc: f32,
     fx: Option<MixFx>,
+    spectrum: spectrum::SpectrumBank,
 }
 
 /// How many windows Automix reads for a beat before it settles for the plain length.
@@ -488,7 +505,8 @@ impl<S: rodio::Source> Meter<S> {
         if let Some(fx) = &mut fx {
             fx.begin(analysis.get().copied().flatten().unwrap_or(0.0));
         }
-        let mut m = Self { inner, status, fade_out, seen_out: 0, ramp: None, mix, acc: 0.0, n: 0, smooth: 0.0, tempo, analysis, analysis_acc: 0.0, fx };
+        let spectrum = spectrum::SpectrumBank::new(inner.sample_rate().get(), inner.channels().get());
+        let mut m = Self { inner, status, fade_out, seen_out: 0, ramp: None, mix, acc: 0.0, n: 0, smooth: 0.0, tempo, analysis, analysis_acc: 0.0, fx, spectrum };
         if fade_in_ms > 0 {
             m.ramp = Some(if mix { Ramp::MixIn { at: 0, len: m.samples(fade_in_ms) } } else { Ramp::In { at: 0, len: m.samples(fade_in_ms) } });
         }
@@ -539,6 +557,7 @@ impl<S: rodio::Source> Iterator for Meter<S> {
                 Ramp::Out { at, .. } | Ramp::MixOut { at, .. } => *at += 1,
             }
         }
+        self.spectrum.push(s, (self.seen_out == 0).then_some(&self.status.spectrum));
         self.acc += s * s;
         self.n += 1;
         if self.n == 2048 {

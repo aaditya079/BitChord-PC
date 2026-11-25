@@ -1130,18 +1130,40 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
         };
     }
 
+    paint_spectrum_bar(app, ui, Rect::from_min_size(pos2(x0, ty + 32.0), vec2(w, 18.0)));
+
     if no_lyrics && app.np_tab == NpTab::Lyrics {
         // A brief note, faded out after a few seconds.
         let since = ui.ctx().memory_mut(|m| *m.data.get_temp_mut_or_insert_with(egui::Id::unique(("no-lyrics", &track.id)), || now));
         let a = (1.0 - ((now - since - 3.0) / 1.0) as f32).clamp(0.0, 1.0);
         if a > 0.0 {
             let c = theme::with_alpha(theme::text_dim(), a * 0.8);
-            text_at(ui, pos2(x0, ty + 40.0), "No lyrics for this song", theme::regular(14.0), c, w);
+            text_at(ui, pos2(x0, ty + 54.0), "No lyrics for this song", theme::regular(14.0), c, w);
             // Frames only for the fade-out.
             let wait = (since + 3.0 - now).max(0.0);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(if wait > 0.0 { wait } else { 0.033 }));
         }
     }
+}
+
+/// Renders a subtle 16-band live audio spectrum bar below the Now Playing transport.
+fn paint_spectrum_bar(app: &App, ui: &Ui, rect: Rect) {
+    if !app.playing() || theme::speed() == 0.0 {
+        return;
+    }
+    let bands = app.audio.status.spectrum();
+    let count = bands.len();
+    let gap = 4.0;
+    let bar_w = ((rect.width() - gap * (count as f32 - 1.0)) / count as f32).max(2.0);
+    let accent = app.accent_color();
+    for (i, &mag) in bands.iter().enumerate() {
+        let h = (2.0 + mag.clamp(0.0, 1.0) * (rect.height() - 2.0)).max(2.0);
+        let x = rect.left() + i as f32 * (bar_w + gap);
+        let bar = Rect::from_min_max(pos2(x, rect.bottom() - h), pos2(x + bar_w, rect.bottom()));
+        let col = theme::with_alpha(accent, 0.25 + 0.55 * mag.clamp(0.0, 1.0));
+        ui.painter().rect_filled(bar, 2.0, col);
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
 }
 
 // ------------------------------------------------------------------ lyrics
