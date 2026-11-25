@@ -40,6 +40,31 @@ const BROWSER_UA: &str =
 pub const JIOSAAVN_UA: &str = BROWSER_UA;
 pub const MONOCHROME_UA: &str = BROWSER_UA;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProviderId {
+    Monochrome,
+    JioSaavn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HealthState {
+    Idle,
+    Healthy(u32),
+    Degraded(String),
+}
+
+static HEALTH: LazyLock<Mutex<HashMap<ProviderId, HealthState>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn record_health(id: ProviderId, state: HealthState) {
+    if let Ok(mut map) = HEALTH.lock() {
+        map.insert(id, state);
+    }
+}
+
+pub fn health(id: ProviderId) -> HealthState {
+    HEALTH.lock().ok().and_then(|m| m.get(&id).cloned()).unwrap_or(HealthState::Idle)
+}
+
 /// One playable answer from a provider.
 pub struct Found {
     pub url: String,
@@ -608,13 +633,21 @@ const JIOSAAVN_HEADERS: [(&str, &str); 3] = [("Accept", "application/json"), ("U
 
 /// The settings' Test: one search, and the API's answer speaks for the server.
 pub async fn probe_saavn(http: &reqwest::Client) -> (bool, String) {
+    let start = Instant::now();
     let url = format!("https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=android&p=1&n=1&q={}", enc("test"));
     match get_text(http, &url, &JIOSAAVN_HEADERS).await {
         Ok(text) if serde_json::from_str::<Value>(&text).is_ok_and(|j| array_at(&j, "results").is_some()) => {
+            record_health(ProviderId::JioSaavn, HealthState::Healthy(start.elapsed().as_millis() as u32));
             (true, "JioSaavn is reachable · search works".to_owned())
         }
-        Ok(_) => (false, "JioSaavn answered, but not with a search".to_owned()),
-        Err(e) => (false, format!("JioSaavn didn't answer ({e:#})")),
+        Ok(_) => {
+            record_health(ProviderId::JioSaavn, HealthState::Degraded("Unexpected search response".to_owned()));
+            (false, "JioSaavn answered, but not with a search".to_owned())
+        }
+        Err(e) => {
+            record_health(ProviderId::JioSaavn, HealthState::Degraded(format!("{e:#}")));
+            (false, format!("JioSaavn didn't answer ({e:#})"))
+        }
     }
 }
 
@@ -1178,20 +1211,31 @@ async fn identify(http: &reqwest::Client, base: &str) -> Option<Kind> {
 /// The settings' Test for a pasted Monochrome link: a server's own link answers a
 /// search; a site's doesn't, so its scripts get read for the server it plays from.
 pub async fn probe_monochrome(http: &reqwest::Client, link: &str) -> (bool, String) {
+    let start = Instant::now();
     let Some((base, origin)) = link_parts(link) else {
         return (false, "That isn't an http(s) link, so it can't be a server.".to_owned());
     };
     if let Some(kind) = identify(http, &base).await {
+        record_health(ProviderId::Monochrome, HealthState::Healthy(start.elapsed().as_millis() as u32));
         return (true, format!("{} · {} · search works", host_of(&base), if kind == Kind::Streamer { "track streamer" } else { "relay" }));
     }
     // Not a server itself: a Monochrome site names its server in its own scripts.
     let page = match get_text(http, &origin, &[("User-Agent", MONOCHROME_UA)]).await {
         Ok(page) => page,
-        Err(e) => return (false, format!("Neither a server nor a site ({e:#})")),
+        Err(e) => {
+            record_health(ProviderId::Monochrome, HealthState::Degraded(format!("{e:#}")));
+            return (false, format!("Neither a server nor a site ({e:#})"));
+        }
     };
     match server_in_site(http, &origin, &page).await {
-        Some(server) => (true, format!("Site plays from {} ({})", server.name, if server.kind == Kind::Streamer { "track streamer" } else { "relay" })),
-        None => (false, "No Monochrome server found at that link.".to_owned()),
+        Some(server) => {
+            record_health(ProviderId::Monochrome, HealthState::Healthy(start.elapsed().as_millis() as u32));
+            (true, format!("Site plays from {} ({})", server.name, if server.kind == Kind::Streamer { "track streamer" } else { "relay" }))
+        }
+        None => {
+            record_health(ProviderId::Monochrome, HealthState::Degraded("No server found".to_owned()));
+            (false, "No Monochrome server found at that link.".to_owned())
+        }
     }
 }
 
