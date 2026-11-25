@@ -17,9 +17,9 @@ pub(super) struct Glow {
     tex: egui::TextureHandle,
 }
 
-pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
+pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64, progress: f32) {
     use crate::preset::BgMode;
-    let t = theme::anim_bool_timed(ctx, "np-open", app.np_open && app.current().is_some(), 0.42);
+    let t = progress.clamp(0.0, 1.0);
     if t <= 0.001 {
         // Closed: nothing to decode for. It picks up from the music's place when opened.
         if app.video.take().is_some() {
@@ -358,7 +358,7 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_righ
     let dial = Rect::from_center_size(at, Vec2::splat(r * 2.0));
     let open = hover(strip) || (was && (hover(dial.expand(10.0)) || ui.input(|i| i.pointer.any_down())));
     ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
-    let reveal = theme::anim_bool(ui.ctx(), "np-vol-reveal", open, 0.15);
+    let reveal = theme::spring_bool(ui.ctx(), "np-vol-reveal", open).clamp(0.0, 1.0);
     if reveal <= 0.001 {
         return;
     }
@@ -366,7 +366,7 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_righ
     let resp = ui
         .interact(dial, egui::Id::unique("np-vol"), Sense::click_and_drag())
         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-    let vh = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.dragged(), 0.15);
+    let vh = theme::spring_bool(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.dragged()).clamp(0.0, 1.0);
     resp.widget_info(|| egui::WidgetInfo::slider(true, vol as f64, "Volume"));
     // Across the dial like a slider: its left edge silence, its right edge full.
     if let Some(p) = resp.interact_pointer_pos()

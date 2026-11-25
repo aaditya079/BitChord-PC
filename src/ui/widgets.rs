@@ -613,12 +613,16 @@ pub fn card(ui: &mut Ui, c: &Card, width: f32, liked: bool, pin: Option<bool>, a
     let resp = named(resp, &c.title).on_hover_cursor(egui::CursorIcon::PointingHand);
     // contains_pointer, not hovered: the play button on top takes the hover, and the
     // card must stay "hovered" while the pointer is on it or the button would vanish.
-    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer(), 0.22);
+    let h = theme::spring_bouncy(ui.ctx(), resp.id.with("h"), if resp.contains_pointer() { 1.0 } else { 0.0 });
+    let h_clamped = h.clamp(0.0, 1.0);
     let img = Rect::from_min_size(rect.min, Vec2::splat(width));
     let radius = if c.round { width / 2.0 } else { theme::card_radius().min(width / 2.0) };
     paint_cover(ui, img, &c.thumbs, radius, 1.0 + 0.06 * h * theme::hover_k());
-    if h > 0.0 && !c.round {
-        ui.painter().rect_filled(img, radius, theme::shade(0.28 * h));
+    if !c.round {
+        ui.painter().rect_stroke(img, radius, theme::glass_stroke(), egui::StrokeKind::Inside);
+    }
+    if h_clamped > 0.0 && !c.round {
+        ui.painter().rect_filled(img, radius, theme::shade(0.28 * h_clamped));
     }
     if let Target::Album(id) | Target::Playlist(id) = &c.target {
         download_veil(ui, img, radius, id);
@@ -674,9 +678,10 @@ pub fn video_card(ui: &mut Ui, c: &Card, width: f32, acts: &mut Vec<Action>) {
         return;
     }
     let resp = named(resp, &c.title).on_hover_cursor(egui::CursorIcon::PointingHand);
-    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer(), 0.22);
+    let h = theme::spring_bouncy(ui.ctx(), resp.id.with("h"), if resp.contains_pointer() { 1.0 } else { 0.0 });
     let radius = theme::card_radius().min(width / 2.0);
     paint_cover(ui, rect, &c.thumbs, radius, 1.0 + 0.04 * h * theme::hover_k());
+    ui.painter().rect_stroke(rect, radius, theme::glass_stroke(), egui::StrokeKind::Inside);
     // dark at the top where the words sit, clear by the middle so the frame itself shows
     scrim(ui, rect, radius, 0.60);
     // Play rises into the corner on hover; on the playing item it stays up and shows pause
