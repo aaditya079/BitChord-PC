@@ -528,10 +528,13 @@ impl Spring {
 /// Animates toward `target` using a damped spring stored in egui's temp memory.
 /// Respects Reduce Motion (`speed() == 0.0`) and stops requesting repaints once settled.
 pub fn spring(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, target: f32, stiffness: f32, damping: f32) -> f32 {
+    let key = egui::Id::unique(id);
     if speed() == 0.0 {
+        let mut s = Spring::new(target, stiffness, damping);
+        s.velocity = 0.0;
+        ctx.data_mut(|d| d.insert_temp(key, s));
         return target;
     }
-    let key = egui::Id::unique(id);
     let dt = ctx.input(|i| i.unstable_dt).clamp(1.0 / 240.0, 0.05);
     let mut s = ctx.data(|d| d.get_temp::<Spring>(key)).unwrap_or_else(|| Spring::new(target, stiffness, damping));
     s.target = target;
@@ -1231,8 +1234,19 @@ mod tests {
         assert!(s.value >= 0.0 && s.value <= 2.0);
     }
 
-    #[cfg(target_os = "linux")]
-    use super::*;
+    #[test]
+    fn spring_zero_speed_syncs_cached_state() {
+        let ctx = egui::Context::default();
+        set_motion(true);
+        assert_eq!(spring(&ctx, "sync-test", 0.0, 240.0, 24.0), 0.0);
+
+        set_motion(false);
+        assert_eq!(spring(&ctx, "sync-test", 1.0, 240.0, 24.0), 1.0);
+
+        set_motion(true);
+        let val = spring(&ctx, "sync-test", 1.0, 240.0, 24.0);
+        assert!((val - 1.0).abs() < f32::EPSILON, "expected synced value 1.0, got {val}");
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -2255,7 +2255,7 @@ impl eframe::App for App {
         self.sync_look();
         let look = self.look();
         // Now playing is dark; once it's most of the way up, so is the player bar under it.
-        let np = theme::spring_bool(&ctx, "np-open", self.np_open && self.current().is_some());
+        let np = theme::spring_bool(&ctx, "np-open", self.np_open && self.current().is_some()).clamp(0.0, 1.0);
         let light = self.light_pages(&ctx) && np < 0.5 && !self.fullscreen;
         theme::set_mode(&ctx, light);
         if self.chrome_applied.as_deref() != Some(look.id.as_str()) {
@@ -2392,7 +2392,7 @@ impl eframe::App for App {
         }
         if np > 0.001 {
             let pages = theme::set_mode(&ctx, false);
-            nowplaying::overlay(self, &ctx, now);
+            nowplaying::overlay(self, &ctx, now, np);
             theme::set_mode(&ctx, pages);
         }
         self.draw_dialog(&ctx);

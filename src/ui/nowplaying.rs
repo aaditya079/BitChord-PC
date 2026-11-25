@@ -17,9 +17,9 @@ pub(super) struct Glow {
     tex: egui::TextureHandle,
 }
 
-pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
+pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64, progress: f32) {
     use crate::preset::BgMode;
-    let t = theme::spring_bool(ctx, "np-open", app.np_open && app.current().is_some());
+    let t = progress.clamp(0.0, 1.0);
     if t <= 0.001 {
         // Closed: nothing to decode for. It picks up from the music's place when opened.
         if app.video.take().is_some() {

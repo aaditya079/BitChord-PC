@@ -822,7 +822,9 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     let cap = Rect::from_min_size(pos2(full.center().x - w / 2.0, full.bottom() - 16.0 - H), vec2(w, H));
     let accent = app.accent_color();
     let ctx = ui.ctx().clone();
-    paint_player_glow(&ctx, ui.painter(), cap, accent);
+    if !app.disable_blur {
+        paint_player_glow(&ctx, ui.painter(), cap, accent);
+    }
     widgets::soft_shadow(ui, cap, H / 2.0, 20.0, 0.45);
     // Frosted: the page's colours show through a milky pane, with a lit top half and
     // a bright rim standing in for the blur egui can't do.
