@@ -1225,22 +1225,25 @@ fn tempo_button(app: &mut App, ui: &mut Ui, resp: egui::Response, accent: Color3
 
 /// The bundled app icon fitted into the sidebar and the idle player sleeve.
 fn app_logo(ui: &Ui, r: Rect, tint: Color32, icon_id: &str) {
-    let ppp = ui.ctx().pixels_per_point();
-    let target_px = ((r.width().max(r.height()) * ppp).round() as u32).max(32);
-    // Supersample at 2x target resolution (clamped to 64..256) with Lanczos3 for razor-sharp anti-aliased rendering
-    let sample_px = (target_px * 2).clamp(64, 256);
-    let key = egui::Id::new(("bitchord-logo", icon_id, sample_px));
+    let key = egui::Id::new(("bitchord-logo", icon_id));
     let tex = match ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         Some(t) => t,
         None => {
-            let variant = crate::appicon::get(icon_id);
-            let img = variant.rgba(sample_px).or_else(|| {
-                let raw = image::load_from_memory(crate::appicon::PNG).ok()?.into_rgba8();
-                Some(image::imageops::resize(&raw, sample_px, sample_px, image::imageops::FilterType::Lanczos3))
-            });
+            let img = if icon_id == crate::appicon::CLASSIC {
+                image::load_from_memory(crate::appicon::PNG).ok().map(|i| i.into_rgba8())
+            } else {
+                let variant = crate::appicon::get(icon_id);
+                variant.rgba(256).or_else(|| image::load_from_memory(crate::appicon::PNG).ok().map(|i| i.into_rgba8()))
+            };
             let Some(img) = img else { return };
             let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-            let t = ui.ctx().load_texture(format!("bitchord-logo-{icon_id}-{sample_px}"), color, egui::TextureOptions::LINEAR);
+            let options = egui::TextureOptions {
+                magnification: egui::TextureFilter::Linear,
+                minification: egui::TextureFilter::Linear,
+                wrap_mode: egui::TextureWrapMode::ClampToEdge,
+                mipmap_mode: Some(egui::TextureFilter::Linear),
+            };
+            let t = ui.ctx().load_texture(format!("bitchord-logo-{icon_id}"), color, options);
             ui.ctx().data_mut(|d| d.insert_temp(key, t.clone()));
             t
         }
