@@ -855,12 +855,7 @@ fn norm_db(status: &AudioStatus, shared: Option<&Shared>) -> Option<f32> {
     if level == Normalize::Off {
         return None;
     }
-    if let Some(loudness_db) = shared.and_then(|s| s.loudness_db) {
-        return Some((level.offset_db() - loudness_db).min(MAX_BOOST_DB));
-    }
-    // Non-YouTube streams (Monochrome FLAC, JioSaavn, local files, yt-dlp) lack YouTube's
-    // loudness header and typically peak near -10 LUFS. Trim gently toward the target.
-    Some((level.offset_db() - 4.0).min(0.0))
+    Some((level.offset_db() - shared?.loudness_db?).min(MAX_BOOST_DB))
 }
 
 fn norm_gain(status: &AudioStatus, shared: Option<&Shared>) -> f32 {
