@@ -948,24 +948,11 @@ body {
   text-align: center;
 }
 
-.download-actions {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 0 auto;
-}
-
-.download-card .hero-actions {
-  justify-content: center;
-}
-
 .download-platforms {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
-  margin-top: 40px;
+  margin-top: 36px;
 }
 
 .platform-btn {
