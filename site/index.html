@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>BitChord PC — Native YouTube Music Client in Rust</title>
-  <meta name="description" content="Native desktop YouTube Music client written in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, synced lyrics, and zero Electron.">
-  <meta name="keywords" content="BitChord PC, YouTube Music desktop app, native music player, Rust audio player, 10-band equalizer, OpenRGB, ASUS Aura, synced lyrics, Spotify import, open source">
+  <title>BitChord PC — Native YouTube Music Desktop Client in Rust</title>
+  <meta name="description" content="Native YouTube Music desktop client in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band live spectrum, synced lyrics, and zero Electron.">
+  <meta name="keywords" content="BitChord PC, YouTube Music desktop app, native music player, Rust audio player, egui, rodio, 10-band equalizer, 16-band spectrum, OpenRGB, ASUS Aura, SteelSeries, synced lyrics, Spotify import, open source">
   <meta name="author" content="Aaditya Srinivasan">
+  <meta name="robots" content="index, follow">
   <meta name="theme-color" content="#0c0a0e">
+  <link rel="canonical" href="https://aaditya079.github.io/BitChord-PC/">
 
   <!-- Open Graph / Meta -->
   <meta property="og:type" content="website">
@@ -16,6 +18,39 @@
   <meta property="og:description" content="Native desktop YouTube Music client in Rust and egui. 42 MB idle RAM, 10-band biquad EQ, synced lyrics, and zero Electron.">
   <meta property="og:url" content="https://aaditya079.github.io/BitChord-PC/">
   <meta property="og:image" content="https://aaditya079.github.io/BitChord-PC/og.png">
+  <meta property="og:image:alt" content="BitChord PC native Rust YouTube Music desktop client">
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="BitChord PC — Native YouTube Music Desktop Client in Rust">
+  <meta name="twitter:description" content="42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band spectrum, synced lyrics, and zero Electron.">
+  <meta name="twitter:image" content="https://aaditya079.github.io/BitChord-PC/og.png">
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "BitChord PC",
+    "operatingSystem": "Windows, macOS, Linux",
+    "applicationCategory": "MultimediaApplication",
+    "softwareVersion": "2.2.0",
+    "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "url": "https://aaditya079.github.io/BitChord-PC/",
+    "downloadUrl": "https://github.com/aaditya079/BitChord-PC/releases/latest",
+    "codeRepository": "https://github.com/aaditya079/BitChord-PC",
+    "author": {
+      "@type": "Person",
+      "name": "Aaditya Srinivasan"
+    },
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "description": "Native YouTube Music desktop client built in Rust and egui with rodio audio decoding, 10-band biquad EQ, 16-band live spectrum visualizer, word-synced lyrics, and hardware RGB sync."
+  }
+  </script>
 
   <!-- Favicons -->
   <link rel="icon" href="favicon.ico" sizes="any">
@@ -62,6 +97,7 @@
   </header>
 
   <!-- ================= HERO ================= -->
+  <main>
   <section class="hero" id="top">
     <div class="hero-content">
       <a class="version-pill" href="https://github.com/aaditya079/BitChord-PC/releases/tag/v2.2.0" target="_blank" rel="noopener">
@@ -327,6 +363,7 @@
       </div>
     </div>
   </section>
+  </main>
 
   <!-- ================= FOOTER ================= -->
   <footer class="footer">
