@@ -1,6 +1,6 @@
 /**
  * BitChord PC — Interactive Experience Script
- * Author: Aaditya Srinivasan
+ * Author: BitChord Project
  */
 (() => {
   "use strict";
