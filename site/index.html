@@ -7,17 +7,22 @@
   <meta name="description" content="Native YouTube Music desktop client in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band live spectrum, synced lyrics, and zero Electron.">
   <meta name="keywords" content="BitChord PC, YouTube Music desktop app, native music player, Rust audio player, egui, rodio, 10-band equalizer, 16-band spectrum, OpenRGB, ASUS Aura, SteelSeries, synced lyrics, Spotify import, open source">
   <meta name="author" content="Aaditya Srinivasan">
+  <meta name="application-name" content="BitChord PC">
   <meta name="robots" content="index, follow">
   <meta name="theme-color" content="#0c0a0e">
   <link rel="canonical" href="https://aaditya079.github.io/BitChord-PC/">
 
   <!-- Open Graph / Meta -->
   <meta property="og:type" content="website">
+  <meta property="og:locale" content="en_US">
   <meta property="og:site_name" content="BitChord PC">
-  <meta property="og:title" content="BitChord PC — Native YouTube Music Client in Rust">
-  <meta property="og:description" content="Native desktop YouTube Music client in Rust and egui. 42 MB idle RAM, 10-band biquad EQ, synced lyrics, and zero Electron.">
+  <meta property="og:title" content="BitChord PC — Native YouTube Music Desktop Client in Rust">
+  <meta property="og:description" content="Native YouTube Music desktop client in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band spectrum, synced lyrics, and zero Electron.">
   <meta property="og:url" content="https://aaditya079.github.io/BitChord-PC/">
   <meta property="og:image" content="https://aaditya079.github.io/BitChord-PC/og.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="BitChord PC native Rust YouTube Music desktop client">
 
   <!-- Twitter / X -->
@@ -32,16 +37,23 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "BitChord PC",
-    "operatingSystem": "Windows, macOS, Linux",
+    "operatingSystem": "Windows 10, Windows 11, macOS 11+, Linux",
     "applicationCategory": "MultimediaApplication",
     "softwareVersion": "2.2.0",
     "license": "https://www.gnu.org/licenses/gpl-3.0.html",
     "url": "https://aaditya079.github.io/BitChord-PC/",
     "downloadUrl": "https://github.com/aaditya079/BitChord-PC/releases/latest",
     "codeRepository": "https://github.com/aaditya079/BitChord-PC",
+    "screenshot": "https://aaditya079.github.io/BitChord-PC/img/app/now-playing-1600.webp",
+    "featureList": "10-band peaking biquad EQ, 16-band live spectrum visualizer, damped spring physics UI, word-synced lyrics, Spotify playlist importer, ASUS TUF/ROG & OpenRGB & SteelSeries hardware sync, Sleep Timer, Listening Replay",
+    "sameAs": [
+      "https://github.com/aaditya079/BitChord-PC",
+      "https://github.com/aaditya079/BitChord-PC/releases"
+    ],
     "author": {
       "@type": "Person",
-      "name": "Aaditya Srinivasan"
+      "name": "Aaditya Srinivasan",
+      "url": "https://github.com/aaditya079"
     },
     "offers": {
       "@type": "Offer",
@@ -49,6 +61,46 @@
       "priceCurrency": "USD"
     },
     "description": "Native YouTube Music desktop client built in Rust and egui with rodio audio decoding, 10-band biquad EQ, 16-band live spectrum visualizer, word-synced lyrics, and hardware RGB sync."
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How much RAM does BitChord PC use compared to Electron apps?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BitChord PC uses ~42 MB idle Working Set (~68 MB during active playback) and starts in ~182 ms, compared to 220–700 MB and 2.5–4.0s startup for Chromium/Electron YouTube Music wrappers."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which operating systems does BitChord PC support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BitChord PC provides native builds for Windows (x64 and ARM64 installers and portable zips), macOS (Apple Silicon and Intel DMGs), and Linux (x86_64 tarballs and an Arch Linux PKGBUILD)."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which RGB keyboards and peripherals are supported?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BitChord PC supports ambient and beat-reactive RGB sync for ASUS TUF and ROG laptops (via SMBIOS-verified ATKACPI), OpenRGB (localhost:6742), and SteelSeries Engine 3 (GameSense)."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is BitChord PC free and open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. BitChord PC is free, has zero telemetry, and is licensed under GPL-3.0 on GitHub."
+        }
+      }
+    ]
   }
   </script>
 
@@ -72,6 +124,7 @@
       <a class="brand" href="#top" aria-label="BitChord PC">
         <img class="brand-icon" src="icon-192.png" alt="BitChord PC Logo" width="32" height="32">
         <span>BitChord PC</span>
+        <span class="brand-version">v2.2.0</span>
       </a>
 
       <nav>
@@ -79,6 +132,7 @@
           <li><a href="#features">Features</a></li>
           <li><a href="#equalizer">10-Band EQ</a></li>
           <li><a href="#performance">Benchmarks</a></li>
+          <li><a href="#faq">FAQ</a></li>
           <li><a href="#download">Download</a></li>
         </ul>
       </nav>
@@ -100,12 +154,6 @@
   <main>
   <section class="hero" id="top">
     <div class="hero-content">
-      <a class="version-pill" href="https://github.com/aaditya079/BitChord-PC/releases/tag/v2.2.0" target="_blank" rel="noopener">
-        <span class="status-dot"></span>
-        <span class="version-text">v2.2.0 · Spring physics &amp; live spectrum</span>
-        <span class="version-arrow">→</span>
-      </a>
-
       <h1 class="hero-title">YouTube Music, built in Rust for the desktop</h1>
 
       <p class="hero-description">
@@ -126,8 +174,6 @@
           <span>View Source</span>
         </a>
       </div>
-
-      <p class="hero-meta">Open source · GPL-3.0 · Zero telemetry</p>
 
       <!-- Hardware Metrics Strip -->
       <div class="metrics-strip">
@@ -155,7 +201,6 @@
 
     <!-- Product Preview Window (Hero Moment) -->
     <div class="hero-preview-wrapper" id="hero-preview-wrapper">
-      <div class="hero-preview-glow" id="hero-preview-glow" aria-hidden="true"></div>
       <div class="hero-preview-frame" id="hero-preview-frame">
         <div class="preview-titlebar">
           <div class="titlebar-controls">
@@ -363,6 +408,32 @@
       </div>
     </div>
   </section>
+
+  <!-- ================= FAQ ================= -->
+  <section class="section" id="faq">
+    <div class="section-header">
+      <span class="section-tag">FAQ</span>
+      <h2 class="section-title">Common questions.</h2>
+    </div>
+    <div class="bento-grid">
+      <div class="bento-card">
+        <h3 class="card-title">How much RAM does BitChord PC use?</h3>
+        <p class="card-desc">~42 MB idle Working Set and ~68 MB during active playback, with a 182 ms median cold start—about 6–10x lighter than Electron clients.</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">Which platforms are supported?</h3>
+        <p class="card-desc">Windows 10/11 (x64 &amp; ARM64 installers and portable zips), macOS 11+ (Apple Silicon &amp; Intel DMGs), and Linux (x86_64 tarballs &amp; Arch PKGBUILD).</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">Which RGB devices work with beat sync?</h3>
+        <p class="card-desc">ASUS TUF/ROG laptops (via SMBIOS-verified ATKACPI), OpenRGB (<code>localhost:6742</code>), and SteelSeries Engine 3 (GameSense).</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">Is it free and open source?</h3>
+        <p class="card-desc">Yes—GPL-3.0 licensed on GitHub with zero telemetry, SHA-256 verified auto-updates, and reproducible local benchmarks.</p>
+      </div>
+    </div>
+  </section>
   </main>
 
   <!-- ================= FOOTER ================= -->
@@ -376,8 +447,11 @@
       <div class="footer-links">
         <a href="https://github.com/aaditya079/BitChord-PC" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/aaditya079/BitChord-PC/releases" target="_blank" rel="noopener">Releases</a>
-        <a href="https://github.com/aaditya079/BitChord-PC/issues" target="_blank" rel="noopener">Issue Tracker</a>
-        <a href="https://github.com/aaditya079/BitChord-PC/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0 License</a>
+        <a href="https://github.com/aaditya079/BitChord-PC/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+        <a href="https://github.com/aaditya079/BitChord-PC/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+        <a href="https://github.com/aaditya079/BitChord-PC/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/aaditya079" target="_blank" rel="me noopener">Author</a>
+        <a href="https://github.com/aaditya079/BitChord-PC/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0</a>
       </div>
 
       <div class="footer-attribution">

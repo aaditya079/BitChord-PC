@@ -1,11 +1,11 @@
 {
-  "name": "bitchord",
-  "short_name": "bitchord",
-  "description": "A fast, native YouTube Music desktop app written in Rust.",
+  "name": "BitChord PC",
+  "short_name": "BitChord",
+  "description": "Native YouTube Music desktop client built in Rust and egui.",
   "start_url": "./",
-  "display": "browser",
-  "background_color": "#0b0707",
-  "theme_color": "#0b0707",
+  "display": "standalone",
+  "background_color": "#0c0a0e",
+  "theme_color": "#0c0a0e",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
