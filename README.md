@@ -11,10 +11,11 @@
 
   <p>
     <a href="https://github.com/aaditya079/BitChord-PC/releases/latest">Download</a> ·
+    <a href="https://aaditya079.github.io/BitChord-PC/">Website</a> ·
     <a href="#features">Features</a> ·
-    <a href="#acknowledgements--credits">Acknowledgements & Credits</a> ·
     <a href="#installation">Installation</a> ·
-    <a href="#performance-benchmarks">Benchmarks</a>
+    <a href="#performance-benchmarks">Benchmarks</a> ·
+    <a href="CHANGELOG.md">Changelog</a>
   </p>
 </div>
 
@@ -26,14 +27,14 @@
 
 ## Acknowledgements & Open-Source Credits
 
-BitChord PC is built upon the extraordinary contributions of the open-source community:
+BitChord PC builds on open-source work from:
 
-- **[grapedjuice/ytm-rs](https://github.com/grapedjuice/ytm-rs)** — The original, groundbreaking native Rust YouTube Music desktop application (`egui` + `rodio` engine) that forms the foundational architecture and player core of this desktop client. Full credit and heartfelt gratitude to grapedjuice and all upstream ytm-rs contributors.
-- **[jackychan4891/BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued)** — Initial desktop adaptations and community continuation.
-- **[kushagrasinghx/BitChord](https://github.com/kushagrasinghx/BitChord)** — The original BitChord mobile music client that inspired the visual identity, aesthetic direction, and user experience.
-- **[egui](https://github.com/emilk/egui)** — Immediate mode graphical user interface for Rust.
-- **[rodio](https://github.com/RustAudio/rodio) & [Symphonia](https://github.com/pdeljanov/Symphonia)** — High-performance audio playback, mixing, and decoding.
-- **[InnerTube / yt-dlp](https://github.com/yt-dlp/yt-dlp)** — YouTube API extraction specifications and JavaScript challenge solving patterns.
+- **[grapedjuice/ytm-rs](https://github.com/grapedjuice/ytm-rs)** — Original native Rust YouTube Music desktop client (`egui` + `rodio` engine) forming the core player architecture. Full credit to grapedjuice and all upstream `ytm-rs` contributors.
+- **[jackychan4891/BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued)** — Desktop continuation and feature ports.
+- **[kushagrasinghx/BitChord](https://github.com/kushagrasinghx/BitChord)** — Visual identity and UX inspiration.
+- **[egui](https://github.com/emilk/egui)** — Immediate-mode GUI for Rust.
+- **[rodio](https://github.com/RustAudio/rodio) & [Symphonia](https://github.com/pdeljanov/Symphonia)** — Native audio decoding, mixing, and playback.
+- **[InnerTube / yt-dlp](https://github.com/yt-dlp/yt-dlp)** — YouTube API extraction and JavaScript challenge solving patterns.
 ## Screenshots
 
 <table>
@@ -60,24 +61,24 @@ BitChord PC is built upon the extraordinary contributions of the open-source com
 - **Children-Designated Tracks & Restricted Content Support** — automated fallback to WebMusic QuickJS challenge solver when visionOS is unplayable.
 - **Anti-403 Stream Recovery** — smart exponential backoff and URL renewal prevents playback cutoffs at the 60s / 1 MiB mark.
 - **Lossless / Hi-Res Lossless / Dolby Atmos** — play higher-quality copies from configured hi-res addon sources when a matching copy is available, with YouTube audio as the fallback.
-- **Automix and crossfade** — DJ-style transitions between songs, with an active mixing state shown in the player.
-- **Sleep Timer with Quadratic Audio Fade** — gradual 30-second volume fadeout so music never stops abruptly.
+- **10-Band EQ, Limiter & 16-Band Live Spectrum** — peaking biquad equalizer (`31 Hz – 16 kHz`), peak limiter, Automix crossfades, and a zero-allocation 16-band live spectrum visualizer in Now Playing.
+- **Sleep Timer** — countdown (`15m`, `30m`, `45m`, `60m`) or **End of current track** in the Queue drawer header, with automatic pause and toast notification.
 - **Queue and playback controls** — shuffle, repeat, autoplay, song radio, next-track prefetch, volume normalization, and output device selection.
-- **Offline Downloads & Local Sync** — batch download entire albums and playlists; auto-sync existing local music files (`.mp3`, `.flac`, `.m4a`, `.opus`, etc.) from your `Music/BitChord` directory.
+- **Offline Downloads & Local Sync** — batch download entire albums and playlists; auto-sync local music files (`.mp3`, `.flac`, `.m4a`, `.opus`, etc.) from your `Music/BitChord` directory.
+- **Listening Replay & Provider Health** — local play-time and top-artist summary in **Library › History**, plus live latency/health badges for Monochrome and JioSaavn in **Settings › Music sources**.
 
 **Hardware & Lighting**
-- **Ambient RGB (ASUS TUF/ROG, OpenRGB, SteelSeries)** — sync keyboard backlight and peripherals with the album art's dominant color.
+- **Ambient & Beat-Reactive RGB (ASUS TUF/ROG, OpenRGB, SteelSeries)** — sync keyboard and peripheral backlights with album art colors and optional audio-reactive brightness pulsing (250 ms rate-limited).
   - **ASUS TUF / ROG Gaming Laptops**: Direct kernel ACPI sync (`\\.\ATKACPI`) strictly verified via SMBIOS vendor and product name checks (default-off behind experimental toggle).
   - **OpenRGB**: Peripherals supported by OpenRGB running on `localhost:6742`.
   - **SteelSeries Engine 3**: Local GameSense JSON event protocol.
-- **Power Saver Mode** — toggle off heavy multi-pass GPU background blur shaders to maximize laptop battery life and reduce fan noise.
+- **Power Saver Mode** — toggle off multi-pass GPU background blur shaders and player glow to reduce GPU usage (`< 0.2%`) on battery.
 
 **Updates & Deployment**
-- **Automatic Updates** — built-in in-place updater (`src/update.rs`) utilizing atomic binary replacement (`swap_exe` on Windows, `replace_bundle` on macOS/Linux) that checks GitHub releases over HTTPS, strictly validates SHA-256 checksums, and seamlessly applies updates in the background.
+- **Automatic Updates** — built-in in-place updater (`src/update.rs`) using atomic binary replacement (`swap_exe` on Windows, `replace_bundle` on macOS/Linux) with HTTPS-only URLs, SHA-256 verification, Stable/Nightly channels, and optional silent install on exit.
 
 **Interface & Visual Polish**
-- **Native Rust desktop UI** — an ultra-fast egui/rodio interface with system media controls, tray integration, and keyboard-friendly navigation.
-- **Apple Music-Style Halo & Floating Player** — ambient drop shadow glow on album art and seamless floating liquid glass player capsule.
+- **Damped Spring Physics & Liquid Glass** — sub-stepped harmonic oscillator transitions (`Spring`) on Now Playing, Queue drawer, volume controls, and card hover bounce (`0 FPS` idle when settled), paired with specular frosted borders and a cached `128x128` offscreen player glow.
 - **Hi-DPI Crisp Mipmaps** — integer-pixel-aligned Dolby Atmos, Lossless, and logo badges across 125%, 150%, and 200% Windows display scaling.
 - **Adaptive Light/Dark Taskbar Controls** — Windows thumbnail toolbar buttons automatically adapt their icons to Windows theme settings.
 - **Windows 11 DWM Integration** — dark titlebar and native rounded window corners via Win32 DWM APIs.
@@ -121,6 +122,8 @@ Official release packages are available from the [v2.2.0 Release](https://github
 
 If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
 
+For Arch Linux, an experimental `PKGBUILD` is available at [`packaging/PKGBUILD`](packaging/PKGBUILD). Nightly builds are published to the [`nightly`](https://github.com/aaditya079/BitChord-PC/releases/tag/nightly) pre-release tag.
+
 ## Building from source
 
 You need the [Rust toolchain](https://rustup.rs/).
@@ -144,7 +147,7 @@ Platform builds may require native dependencies (audio/system libraries and tool
 
 ## Contributing
 
-Bug reports and pull requests are welcome. Please open an issue with clear reproduction steps, platform details, and relevant logs.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test instructions (`cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked`) and PR guidelines.
 
 ## License
 
