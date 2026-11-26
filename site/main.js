@@ -39,27 +39,27 @@
   const primaryBtn = document.getElementById("primary-dl-btn");
   const primaryLabel = document.getElementById("primary-dl-label");
 
-  const WIN_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0.exe";
-  const MAC_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0-macos-aarch64.dmg";
-  const LINUX_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-2.1.0-linux-x86_64.tar.gz";
+  const WIN_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0.exe";
+  const MAC_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0-macos-aarch64.dmg";
+  const LINUX_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-2.2.0-linux-x86_64.tar.gz";
 
   if (isMac) {
     if (heroLabel) heroLabel.textContent = "Download for macOS";
     if (heroBtn) heroBtn.href = MAC_URL;
-    if (primaryLabel) primaryLabel.textContent = "Download v2.1.0 for macOS (.dmg)";
+    if (primaryLabel) primaryLabel.textContent = "Download v2.2.0 for macOS (.dmg)";
     if (primaryBtn) primaryBtn.href = MAC_URL;
     document.getElementById("dl-mac")?.classList.add("featured");
   } else if (isLinux) {
     if (heroLabel) heroLabel.textContent = "Download for Linux";
     if (heroBtn) heroBtn.href = LINUX_URL;
-    if (primaryLabel) primaryLabel.textContent = "Download v2.1.0 for Linux (.tar.gz)";
+    if (primaryLabel) primaryLabel.textContent = "Download v2.2.0 for Linux (.tar.gz)";
     if (primaryBtn) primaryBtn.href = LINUX_URL;
     document.getElementById("dl-linux")?.classList.add("featured");
   } else {
     // Windows default
     if (heroLabel) heroLabel.textContent = "Download for Windows";
     if (heroBtn) heroBtn.href = WIN_URL;
-    if (primaryLabel) primaryLabel.textContent = "Download v2.1.0 for Windows (.exe)";
+    if (primaryLabel) primaryLabel.textContent = "Download v2.2.0 for Windows (.exe)";
     if (primaryBtn) primaryBtn.href = WIN_URL;
     document.getElementById("dl-win")?.classList.add("featured");
   }

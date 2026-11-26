@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>BitChord PC — Studio Sound, Liquid Glass, Zero Electron</title>
-  <meta name="description" content="An audiophile-grade, native desktop YouTube Music client written in Rust. Features a 10-band graphic equalizer, real-time ambient RGB hardware sync, word-by-word synced lyrics, and zero Electron bloat.">
-  <meta name="keywords" content="BitChord PC, YouTube Music desktop app, native music player, Rust audio player, 10-band equalizer, Razer Chroma, Corsair iCUE, synced lyrics, Spotify import, open source">
+  <title>BitChord PC — Native YouTube Music Client in Rust</title>
+  <meta name="description" content="Native desktop YouTube Music client written in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, synced lyrics, and zero Electron.">
+  <meta name="keywords" content="BitChord PC, YouTube Music desktop app, native music player, Rust audio player, 10-band equalizer, OpenRGB, ASUS Aura, synced lyrics, Spotify import, open source">
   <meta name="author" content="Aaditya Srinivasan">
   <meta name="theme-color" content="#0c0a0e">
 
   <!-- Open Graph / Meta -->
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="BitChord PC">
-  <meta property="og:title" content="BitChord PC — Studio Sound, Liquid Glass, Zero Electron">
-  <meta property="og:description" content="A fast, audiophile-grade native desktop YouTube Music client written in Rust. 10-band graphic EQ, ambient RGB sync, synced lyrics, and zero Electron overhead.">
+  <meta property="og:title" content="BitChord PC — Native YouTube Music Client in Rust">
+  <meta property="og:description" content="Native desktop YouTube Music client in Rust and egui. 42 MB idle RAM, 10-band biquad EQ, synced lyrics, and zero Electron.">
   <meta property="og:url" content="https://aaditya079.github.io/BitChord-PC/">
   <meta property="og:image" content="https://aaditya079.github.io/BitChord-PC/og.png">
 
@@ -27,7 +27,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=2.1.0">
+  <link rel="stylesheet" href="styles.css?v=2.2.0">
 </head>
 <body>
 
@@ -63,20 +63,20 @@
 
   <!-- ================= HERO ================= -->
   <section class="hero" id="top">
-    <a class="version-pill" href="https://github.com/aaditya079/BitChord-PC/releases/tag/v2.1.0" target="_blank" rel="noopener">
+    <a class="version-pill" href="https://github.com/aaditya079/BitChord-PC/releases/tag/v2.2.0" target="_blank" rel="noopener">
       <span class="status-dot"></span>
-      <span>v2.1.0 Community Continued</span>
-      <span style="opacity: 0.6;">· What's new →</span>
+      <span>v2.2.0 · Spring Physics &amp; Spectrum</span>
+      <span style="opacity: 0.6;">· Release notes →</span>
     </a>
 
     <h1 class="hero-title">
-      <span>Studio Sound.</span><br>
-      <span>Liquid Glass.</span><br>
+      <span>Native Rust.</span><br>
+      <span>Spring Physics.</span><br>
       <span class="accent-text">Zero Electron.</span>
     </h1>
 
     <p class="hero-description">
-      BitChord PC is an audiophile-grade, native desktop player for YouTube Music written in pure Rust. Built with a 10-band graphic equalizer, real-time Razer Chroma &amp; Corsair RGB sync, word-by-word synced lyrics, and stutter-free HLS streaming.
+      A fast, native YouTube Music desktop client built in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band live spectrum, word-synced lyrics, and stutter-free HLS streaming.
     </p>
 
     <div class="hero-actions">
@@ -87,21 +87,21 @@
         <span id="hero-download-label">Download for Windows</span>
       </a>
       <a class="btn btn-ghost btn-lg" href="https://github.com/aaditya079/BitChord-PC" target="_blank" rel="noopener">
-        View Source Code
+        View Source
       </a>
     </div>
 
-    <p class="hero-meta">Open source · GPL-3.0 License · Zero telemetry</p>
+    <p class="hero-meta">Open source · GPL-3.0 · No telemetry</p>
 
     <!-- Stats Banner -->
     <div class="stats-banner">
       <div class="stat-item">
-        <span class="stat-value">&lt; 80 MB</span>
-        <span class="stat-label">RAM Footprint</span>
+        <span class="stat-value">42 MB</span>
+        <span class="stat-label">Idle Working Set</span>
       </div>
       <div class="stat-item">
-        <span class="stat-value">&lt; 200 ms</span>
-        <span class="stat-label">Cold Startup</span>
+        <span class="stat-value">182 ms</span>
+        <span class="stat-label">Median Cold Start</span>
       </div>
       <div class="stat-item">
         <span class="stat-value">10-Band</span>
@@ -109,7 +109,7 @@
       </div>
       <div class="stat-item">
         <span class="stat-value">0%</span>
-        <span class="stat-label">Electron Overhead</span>
+        <span class="stat-label">Chromium Overhead</span>
       </div>
     </div>
   </section>
@@ -117,9 +117,9 @@
   <!-- ================= FEATURES ================= -->
   <section class="section" id="features">
     <div class="section-header">
-      <span class="section-tag">Audio Architecture</span>
-      <h2 class="section-title">Engineered for pure listening fidelity.</h2>
-      <p class="section-subtitle">Everything you love about YouTube Music, elevated with native GPU acceleration and professional sound shaping.</p>
+      <span class="section-tag">Core Features</span>
+      <h2 class="section-title">Built for speed, sound, and clean desktop UX.</h2>
+      <p class="section-subtitle">Native GPU rendering, lock-free audio DSP, and zero browser bloat.</p>
     </div>
 
     <div class="bento-grid">
@@ -133,8 +133,8 @@
             <line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line>
           </svg>
         </div>
-        <h3 class="card-title">10-Band Graphic Equalizer &amp; Automix</h3>
-        <p class="card-desc">Fine-tune frequencies from 31 Hz sub-bass to 16 kHz air using peaking biquad filters. Includes 10 acoustic presets, clipping protection, and seamless DJ-style crossfade transitions between tracks.</p>
+        <h3 class="card-title">10-Band Biquad EQ, Limiter &amp; Live Spectrum</h3>
+        <p class="card-desc">Shape frequencies from 31 Hz to 16 kHz with peaking biquad filters, built-in peak limiting, Automix crossfades, and a zero-allocation 16-band live spectrum visualizer.</p>
       </div>
 
       <!-- 2: Hardware RGB -->
@@ -144,8 +144,8 @@
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
           </svg>
         </div>
-        <h3 class="card-title">Universal Ambient RGB Sync</h3>
-        <p class="card-desc">Your battlestation reacts dynamically to album artwork palette with support for Razer Chroma, Corsair iCUE, ASUS Aura ROG, Logitech, and OpenRGB.</p>
+        <h3 class="card-title">Beat-Reactive Hardware RGB</h3>
+        <p class="card-desc">Syncs album art colors and audio-reactive brightness to ASUS TUF/ROG laptops (SMBIOS-guarded ATKACPI), OpenRGB, and SteelSeries GameSense.</p>
       </div>
 
       <!-- 3: HLS Engine -->
@@ -155,8 +155,8 @@
             <path d="M5 12h14"></path><path d="M12 5l7 7-7 7"></path>
           </svg>
         </div>
-        <h3 class="card-title">Stutter-Free Native HLS</h3>
-        <p class="card-desc">Replaced throttled progressive streaming with native HLS chunking and QuickJS cipher solvers. Age-gated and children's tracks never hit a 403 buffer freeze.</p>
+        <h3 class="card-title">Native HLS &amp; 403 Recovery</h3>
+        <p class="card-desc">Native HLS chunked streaming with QuickJS cipher solving, automatic 403 URL renewal, and optional lossless FLAC playback via Monochrome &amp; JioSaavn.</p>
       </div>
 
       <!-- 4: Synced Lyrics -->
@@ -166,8 +166,8 @@
             <path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle>
           </svg>
         </div>
-        <h3 class="card-title">Syllable-Synced Lyrics</h3>
-        <p class="card-desc">Word-by-word karaoke tracking with automatic romanization for Japanese (Furigana/Romaji), Korean (Hangul), and Chinese over liquid acrylic glass backgrounds.</p>
+        <h3 class="card-title">Word-Synced Lyrics &amp; Spring UI</h3>
+        <p class="card-desc">Syllable-level karaoke with Japanese, Korean, and Chinese romanization over damped spring transitions, frosted borders, and cached player glow.</p>
       </div>
 
       <!-- 5: Spotify & Offline -->
@@ -177,8 +177,8 @@
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>
           </svg>
         </div>
-        <h3 class="card-title">Spotify Importer &amp; Offline</h3>
-        <p class="card-desc">Import any Spotify playlist or Liked Songs directly into your YouTube Music library. Download songs locally with embedded high-DPI album art and metadata tags.</p>
+        <h3 class="card-title">Spotify Import, Replay &amp; Sleep Timer</h3>
+        <p class="card-desc">Import Spotify playlists, download tracks with embedded metadata, track local Listening Replay stats, and set a countdown or end-of-track sleep timer.</p>
       </div>
     </div>
   </section>
@@ -186,9 +186,9 @@
   <!-- ================= INTERACTIVE EQUALIZER DEMO ================= -->
   <section class="section" id="equalizer">
     <div class="section-header">
-      <span class="section-tag">Interactive Audio Playground</span>
-      <h2 class="section-title">Shape your sound frequency response.</h2>
-      <p class="section-subtitle">Experience how BitChord PC's 10-band peaking biquad engine models acoustic gain in real-time.</p>
+      <span class="section-tag">10-Band EQ Preview</span>
+      <h2 class="section-title">Test the 10-band equalizer curve.</h2>
+      <p class="section-subtitle">Preview how BitChord PC's peaking biquad bands shape gain from 31 Hz to 16 kHz.</p>
     </div>
 
     <div class="eq-container">
@@ -213,33 +213,33 @@
   <!-- ================= PERFORMANCE COMPARISON ================= -->
   <section class="section" id="performance">
     <div class="section-header">
-      <span class="section-tag">Zero Bloat</span>
-      <h2 class="section-title">Native Rust vs Electron Wrappers.</h2>
-      <p class="section-subtitle">Real metrics measured on Windows 11. No Chromium runtime, no NodeJS overhead.</p>
+      <span class="section-tag">Benchmarks</span>
+      <h2 class="section-title">Native Rust vs Electron Clients.</h2>
+      <p class="section-subtitle">Measured on Windows 11 (ASUS TUF A15, Ryzen 7, 16 GB RAM). Reproducible via <code>benchmarks/measure.ps1</code>.</p>
     </div>
 
     <table class="comparison-table">
       <thead>
         <tr>
           <th>Benchmark Metric</th>
-          <th class="highlight">BitChord PC (Rust)</th>
-          <th>Web / Electron Apps</th>
+          <th class="highlight">BitChord PC (v2.2.0)</th>
+          <th>Web / Electron Clients</th>
         </tr>
       </thead>
       <tbody>
         <tr>
-          <td class="feature-name">RAM Footprint (Playback)</td>
-          <td class="winner">&lt; 80 MB</td>
-          <td class="standard">~550 – 850 MB</td>
+          <td class="feature-name">RAM (Idle / Active Playback)</td>
+          <td class="winner">42 MB / 68 MB</td>
+          <td class="standard">~220 – 700 MB</td>
         </tr>
         <tr>
-          <td class="feature-name">Cold Startup Time</td>
-          <td class="winner">&lt; 180 ms</td>
-          <td class="standard">2.8 – 4.5 seconds</td>
+          <td class="feature-name">Cold Startup Time (Median)</td>
+          <td class="winner">182 ms</td>
+          <td class="standard">2.5 – 4.0 seconds</td>
         </tr>
         <tr>
           <td class="feature-name">Idle CPU Draw</td>
-          <td class="winner">0.0% (Zero tick)</td>
+          <td class="winner">0.0% (0 FPS idle)</td>
           <td class="standard">2.5 – 6.0% (Render loop)</td>
         </tr>
         <tr>
@@ -248,13 +248,13 @@
           <td class="standard">Chromium HTML5 Audio</td>
         </tr>
         <tr>
-          <td class="feature-name">Equalizer &amp; Sound Engine</td>
-          <td class="winner">10-Band Biquad Peaking Filters</td>
+          <td class="feature-name">Equalizer &amp; Spectrum</td>
+          <td class="winner">10-Band Biquad EQ + 16-Band Spectrum</td>
           <td class="standard">None / WebAudio extension</td>
         </tr>
         <tr>
           <td class="feature-name">Hardware RGB Integration</td>
-          <td class="winner">Built-in (iCUE, Chroma, Aura)</td>
+          <td class="winner">ASUS TUF/ROG, OpenRGB, SteelSeries</td>
           <td class="standard">Not supported</td>
         </tr>
       </tbody>
@@ -264,31 +264,31 @@
   <!-- ================= DOWNLOAD HUB ================= -->
   <section class="section" id="download">
     <div class="download-card">
-      <span class="section-tag">Get BitChord PC</span>
-      <h2 class="section-title" style="margin-top: 8px;">Download for your operating system.</h2>
+      <span class="section-tag">Download</span>
+      <h2 class="section-title" style="margin-top: 8px;">Get BitChord PC v2.2.0.</h2>
       <p class="section-subtitle" style="max-width: 600px; margin: 0 auto 30px;">
-        Free, open-source, and updated continuously. Runs on Windows 10/11, macOS 11+, and modern Linux distributions.
+        Free, open-source, and signed-off in CI. Runs on Windows 10/11, macOS 11+, and Linux.
       </p>
 
       <div class="hero-actions">
         <a class="btn btn-primary btn-lg" id="primary-dl-btn" href="https://github.com/aaditya079/BitChord-PC/releases/latest">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 3v11.17l4.59-4.58L18 11l-6 6-6-6 1.41-1.41L11 14.17V3zM5 19h14v2H5z"/></svg>
-          <span id="primary-dl-label">Download v2.1.0 for Windows</span>
+          <span id="primary-dl-label">Download v2.2.0 for Windows</span>
         </a>
       </div>
 
       <div class="download-platforms">
-        <a class="platform-btn" id="dl-win" href="https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0.exe">
+        <a class="platform-btn" id="dl-win" href="https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0.exe">
           <span class="platform-title">Windows (x64 / ARM64)</span>
           <span class="platform-desc">Installer (.exe) &amp; Portable (.zip)</span>
         </a>
-        <a class="platform-btn" id="dl-mac" href="https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-setup-2.1.0-macos-aarch64.dmg">
+        <a class="platform-btn" id="dl-mac" href="https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0-macos-aarch64.dmg">
           <span class="platform-title">macOS (Apple Silicon / Intel)</span>
           <span class="platform-desc">Disk Image (.dmg) · macOS 11+</span>
         </a>
-        <a class="platform-btn" id="dl-linux" href="https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.0/bitchord-2.1.0-linux-x86_64.tar.gz">
+        <a class="platform-btn" id="dl-linux" href="https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-2.2.0-linux-x86_64.tar.gz">
           <span class="platform-title">Linux (x86_64)</span>
-          <span class="platform-desc">Installer tarball &amp; Portable</span>
+          <span class="platform-desc">Tarball &amp; Arch PKGBUILD</span>
         </a>
       </div>
     </div>
@@ -299,7 +299,7 @@
     <div class="footer-content">
       <div>
         <strong style="color: var(--text-primary); font-size: 1.1rem;">BitChord PC</strong>
-        <p style="margin-top: 4px;">Engineered by Aaditya Srinivasan · Built with Rust &amp; OpenGL.</p>
+        <p style="margin-top: 4px;">Maintained by Aaditya Srinivasan · Built with Rust &amp; egui.</p>
       </div>
 
       <div class="footer-links">
@@ -315,6 +315,6 @@
     </div>
   </footer>
 
-  <script src="main.js?v=2.1.0"></script>
+  <script src="main.js?v=2.2.0"></script>
 </body>
 </html>
