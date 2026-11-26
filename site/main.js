@@ -120,6 +120,7 @@
         gainText.textContent = `${val > 0 ? "+" : ""}${val}dB`;
         document.querySelectorAll(".preset-chip").forEach((c) => c.classList.remove("active"));
         drawCurve();
+        updateEqFilterGain(idx, val);
       });
 
       const label = document.createElement("span");
@@ -207,8 +208,168 @@
       s.value = currentGains[idx];
       const g = document.getElementById(`gain-${idx}`);
       if (g) g.textContent = `${currentGains[idx] > 0 ? "+" : ""}${currentGains[idx]}dB`;
+      updateEqFilterGain(idx, currentGains[idx]);
     });
     drawCurve();
+  }
+
+  // --- Web Audio API Interactive Sound Preview ---
+  let audioCtx = null;
+  let eqFilters = [];
+  let masterGain = null;
+  let audioAnalyser = null;
+  let isAudioPlaying = false;
+  let activeSources = [];
+
+  function initAudioContext() {
+    if (audioCtx) return true;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return false;
+    try {
+      audioCtx = new AudioCtx();
+
+      // Build 10 peaking biquad filters matching the 10 bands
+      eqFilters = BANDS.map((band, idx) => {
+        const f = audioCtx.createBiquadFilter();
+        f.type = "peaking";
+        f.frequency.setValueAtTime(band.freq, audioCtx.currentTime);
+        f.Q.setValueAtTime(1.4, audioCtx.currentTime);
+        f.gain.setValueAtTime(currentGains[idx], audioCtx.currentTime);
+        return f;
+      });
+
+      // Chain filters in series
+      for (let i = 0; i < eqFilters.length - 1; i++) {
+        eqFilters[i].connect(eqFilters[i + 1]);
+      }
+
+      // Analyser for real-time FFT / spectrum
+      audioAnalyser = audioCtx.createAnalyser();
+      audioAnalyser.fftSize = 64;
+      audioAnalyser.smoothingTimeConstant = 0.82;
+      eqFilters[eqFilters.length - 1].connect(audioAnalyser);
+
+      // Master Gain
+      masterGain = audioCtx.createGain();
+      masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+      audioAnalyser.connect(masterGain);
+      masterGain.connect(audioCtx.destination);
+      return true;
+    } catch (err) {
+      console.warn("Web Audio API initialization failed:", err);
+      return false;
+    }
+  }
+
+  function updateEqFilterGain(idx, val) {
+    if (eqFilters[idx] && audioCtx) {
+      eqFilters[idx].gain.setTargetAtTime(val, audioCtx.currentTime, 0.03);
+    }
+  }
+
+  function startTone() {
+    if (!initAudioContext()) return;
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume();
+    }
+
+    stopTone(false);
+
+    // Rich harmonic chord (A2, E3, A3, C4, E4, A5)
+    // Spans 100 Hz to 10 kHz so all 10 EQ bands have audible material to shape
+    const freqs = [
+      { f: 110.0, type: "sawtooth", gain: 0.07 },
+      { f: 164.81, type: "triangle", gain: 0.06 },
+      { f: 220.0, type: "sawtooth", gain: 0.06 },
+      { f: 329.63, type: "triangle", gain: 0.05 },
+      { f: 523.25, type: "sawtooth", gain: 0.04 },
+      { f: 880.0, type: "sine", gain: 0.03 }
+    ];
+
+    const chordGain = audioCtx.createGain();
+    chordGain.gain.value = 1.0;
+
+    freqs.forEach((spec) => {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = spec.type;
+      osc.frequency.setValueAtTime(spec.f, audioCtx.currentTime);
+      g.gain.setValueAtTime(spec.gain, audioCtx.currentTime);
+      osc.connect(g);
+      g.connect(chordGain);
+      osc.start();
+      activeSources.push(osc);
+    });
+
+    // Gentle shaped noise buffer for 4 kHz - 16 kHz brilliance band testing
+    const bufferSize = audioCtx.sampleRate * 2;
+    const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      output[i] = (Math.random() * 2 - 1) * 0.012;
+    }
+    const noiseSource = audioCtx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+    noiseSource.loop = true;
+
+    const noiseFilter = audioCtx.createBiquadFilter();
+    noiseFilter.type = "highpass";
+    noiseFilter.frequency.setValueAtTime(3200, audioCtx.currentTime);
+
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(chordGain);
+    noiseSource.start();
+    activeSources.push(noiseSource);
+
+    // Connect sound source into first EQ band
+    chordGain.connect(eqFilters[0]);
+
+    // Fade in master volume comfortably
+    masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    masterGain.gain.setValueAtTime(masterGain.gain.value, audioCtx.currentTime);
+    masterGain.gain.setTargetAtTime(0.12, audioCtx.currentTime, 0.05);
+
+    isAudioPlaying = true;
+    const eqBtn = document.getElementById("eq-audio-btn");
+    const eqLabel = document.getElementById("eq-audio-label");
+    if (eqBtn) eqBtn.classList.add("playing");
+    if (eqLabel) eqLabel.textContent = "Stop Tone";
+  }
+
+  function stopTone(updateUI = true) {
+    if (masterGain && audioCtx) {
+      masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+      masterGain.gain.setValueAtTime(masterGain.gain.value, audioCtx.currentTime);
+      masterGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.03);
+    }
+    setTimeout(() => {
+      activeSources.forEach((src) => {
+        try {
+          src.stop();
+          src.disconnect();
+        } catch (_) {}
+      });
+      activeSources = [];
+    }, 60);
+
+    isAudioPlaying = false;
+    if (updateUI) {
+      const eqBtn = document.getElementById("eq-audio-btn");
+      const eqLabel = document.getElementById("eq-audio-label");
+      if (eqBtn) eqBtn.classList.remove("playing");
+      if (eqLabel) eqLabel.textContent = "Preview Tone";
+    }
+  }
+
+  const eqAudioBtn = document.getElementById("eq-audio-btn");
+  if (eqAudioBtn) {
+    eqAudioBtn.addEventListener("click", () => {
+      if (isAudioPlaying) {
+        stopTone(true);
+      } else {
+        startTone();
+      }
+    });
   }
 
   // Preset button listeners
@@ -223,4 +384,149 @@
   // Init EQ
   renderSliders();
   drawCurve();
+
+  // --- Hero Titlebar Spectrum Visualizer ---
+  const spectrumCanvas = document.getElementById("hero-spectrum");
+  const specCtx = spectrumCanvas ? spectrumCanvas.getContext("2d") : null;
+  const BARS_COUNT = 16;
+  const BAR_WIDTH = 4;
+  const BAR_GAP = 2;
+  const barsData = new Float32Array(BARS_COUNT).fill(2);
+  let spectrumAnimationId = null;
+  let isSpectrumVisible = true;
+
+  function renderSpectrum(timestamp) {
+    if (!spectrumCanvas || !specCtx) return;
+    const w = spectrumCanvas.width;
+    const h = spectrumCanvas.height;
+    specCtx.clearRect(0, 0, w, h);
+
+    if (isAudioPlaying && audioAnalyser) {
+      const freqData = new Uint8Array(audioAnalyser.frequencyBinCount);
+      audioAnalyser.getByteFrequencyData(freqData);
+      for (let i = 0; i < BARS_COUNT; i++) {
+        const binIdx = Math.floor(Math.pow(i / BARS_COUNT, 1.4) * (freqData.length - 1));
+        const targetHeight = Math.max(2, (freqData[binIdx] / 255) * h);
+        barsData[i] += (targetHeight - barsData[i]) * 0.35;
+      }
+    } else {
+      // Ambient live music simulation
+      const t = timestamp * 0.003;
+      for (let i = 0; i < BARS_COUNT; i++) {
+        const beat = Math.sin(t * 2.2 + i * 0.4) * 0.5 + 0.5;
+        const noise = Math.sin(t * 5.7 - i * 0.9) * 0.3 + 0.5;
+        const rollOff = 1 - (i / BARS_COUNT) * 0.4;
+        const target = Math.max(2, (beat * 0.6 + noise * 0.4) * h * rollOff);
+        barsData[i] += (target - barsData[i]) * 0.18;
+      }
+    }
+
+    for (let i = 0; i < BARS_COUNT; i++) {
+      const x = i * (BAR_WIDTH + BAR_GAP);
+      const barH = Math.min(h, Math.max(2, barsData[i]));
+      const y = h - barH;
+
+      specCtx.fillStyle = i % 3 === 0 ? "#fa586a" : "rgba(250, 88, 106, 0.75)";
+      specCtx.fillRect(x, y, BAR_WIDTH, barH);
+    }
+
+    if (isSpectrumVisible) {
+      spectrumAnimationId = requestAnimationFrame(renderSpectrum);
+    }
+  }
+
+  // Pause animation when hero preview is offscreen (zero CPU waste)
+  const heroWrapper = document.getElementById("hero-preview-wrapper");
+  if (spectrumCanvas && "IntersectionObserver" in window) {
+    const specObserver = new IntersectionObserver(
+      ([entry]) => {
+        isSpectrumVisible = entry.isIntersecting;
+        if (isSpectrumVisible) {
+          cancelAnimationFrame(spectrumAnimationId);
+          spectrumAnimationId = requestAnimationFrame(renderSpectrum);
+        }
+      },
+      { threshold: 0.05 }
+    );
+    specObserver.observe(heroWrapper || spectrumCanvas);
+  } else if (spectrumCanvas) {
+    spectrumAnimationId = requestAnimationFrame(renderSpectrum);
+  }
+
+  // --- Hero Window 3D Perspective Tilt & Specular Shine ---
+  const previewFrame = document.getElementById("hero-preview-frame");
+  const previewWrapper = document.getElementById("hero-preview-wrapper");
+
+  if (previewWrapper && previewFrame) {
+    let curRotX = 0;
+    let curRotY = 0;
+    let targetRotX = 0;
+    let targetRotY = 0;
+    let tiltRafId = null;
+
+    const updateTilt = () => {
+      curRotX += (targetRotX - curRotX) * 0.12;
+      curRotY += (targetRotY - curRotY) * 0.12;
+      previewFrame.style.transform = `perspective(1200px) rotateX(${curRotX.toFixed(2)}deg) rotateY(${curRotY.toFixed(2)}deg) translateY(-2px)`;
+
+      if (Math.abs(curRotX - targetRotX) > 0.02 || Math.abs(curRotY - targetRotY) > 0.02) {
+        tiltRafId = requestAnimationFrame(updateTilt);
+      } else {
+        tiltRafId = null;
+      }
+    };
+
+    previewWrapper.addEventListener("mousemove", (e) => {
+      const rect = previewWrapper.getBoundingClientRect();
+      const normX = (e.clientX - rect.left) / rect.width;
+      const normY = (e.clientY - rect.top) / rect.height;
+
+      targetRotX = (normY - 0.5) * -6.0;
+      targetRotY = (normX - 0.5) * 6.0;
+
+      previewWrapper.style.setProperty("--shine-x", `${(normX * 100).toFixed(1)}%`);
+      previewWrapper.style.setProperty("--shine-y", `${(normY * 100).toFixed(1)}%`);
+
+      if (!tiltRafId) tiltRafId = requestAnimationFrame(updateTilt);
+    });
+
+    previewWrapper.addEventListener("mouseleave", () => {
+      targetRotX = 0;
+      targetRotY = 0;
+      if (!tiltRafId) tiltRafId = requestAnimationFrame(updateTilt);
+    });
+  }
+
+  // --- Card Cursor Spotlight Effect ---
+  const spotlightCards = document.querySelectorAll(".bento-card, .platform-btn");
+  spotlightCards.forEach((card) => {
+    card.addEventListener("mousemove", (e) => {
+      const rect = card.getBoundingClientRect();
+      card.style.setProperty("--mouse-x", `${(e.clientX - rect.left).toFixed(1)}px`);
+      card.style.setProperty("--mouse-y", `${(e.clientY - rect.top).toFixed(1)}px`);
+    });
+    card.addEventListener("mouseleave", () => {
+      card.style.setProperty("--mouse-x", "-500px");
+      card.style.setProperty("--mouse-y", "-500px");
+    });
+  });
+
+  // --- Scroll Reveal Transitions ---
+  const revealElements = document.querySelectorAll(".reveal");
+  if (revealElements.length > 0 && "IntersectionObserver" in window) {
+    const revealObserver = new IntersectionObserver(
+      (entries, observer) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("revealed");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.1, rootMargin: "0px 0px -40px 0px" }
+    );
+    revealElements.forEach((el) => revealObserver.observe(el));
+  } else {
+    revealElements.forEach((el) => el.classList.add("revealed"));
+  }
 })();

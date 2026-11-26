@@ -351,16 +351,37 @@ body {
   background: var(--border-subtle);
 }
 
-/* ================= PRODUCT PREVIEW WINDOW ================= */
-.hero-preview-frame {
+/* ================= PRODUCT PREVIEW WINDOW & 3D INTERACTION ================= */
+.hero-preview-wrapper {
+  position: relative;
   width: 100%;
   max-width: 1040px;
   margin-top: 48px;
+  perspective: 1200px;
+}
+
+.hero-preview-glow {
+  position: absolute;
+  inset: 20px 40px -20px;
+  background: radial-gradient(ellipse at 50% 50%, rgba(250, 88, 106, 0.18) 0%, rgba(250, 88, 106, 0.04) 45%, transparent 70%);
+  filter: blur(52px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.85;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.hero-preview-frame {
+  position: relative;
+  z-index: 1;
+  width: 100%;
   border-radius: var(--radius-md);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 28px 56px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   overflow: hidden;
+  transform-style: preserve-3d;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
 }
 
 .preview-titlebar {
@@ -391,14 +412,41 @@ body {
   letter-spacing: 0.02em;
 }
 
-.titlebar-ghost {
-  width: 42px;
+.titlebar-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.titlebar-spectrum {
+  display: block;
+  width: 96px;
+  height: 14px;
+  opacity: 0.85;
+}
+
+.preview-body {
+  position: relative;
+  overflow: hidden;
 }
 
 .preview-body img {
   display: block;
   width: 100%;
   height: auto;
+}
+
+.preview-shine {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(700px circle at var(--shine-x, 50%) var(--shine-y, 0%), rgba(255, 255, 255, 0.07), transparent 60%);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.hero-preview-frame:hover .preview-shine {
+  opacity: 1;
 }
 
 @media (max-width: 680px) {
@@ -413,6 +461,9 @@ body {
   }
   .titlebar-caption {
     display: none;
+  }
+  .hero-preview-glow {
+    filter: blur(32px);
   }
 }
 
@@ -578,24 +629,34 @@ body {
   font-weight: 600;
 }
 
+.eq-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .eq-presets {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
-  margin-top: 28px;
 }
 
 .preset-chip {
   padding: 6px 14px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-sm);
   background: var(--bg-surface-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
-  transition: var(--transition);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .preset-chip:hover {
@@ -605,10 +666,103 @@ body {
 }
 
 .preset-chip.active {
-  background: var(--bitchord-red);
+  background: var(--bitchord-red-tint);
   border-color: var(--bitchord-red);
   color: #ffffff;
   font-weight: 600;
+}
+
+.eq-audio-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.eq-audio-btn:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.eq-audio-btn.playing {
+  background: var(--bitchord-red-tint);
+  border-color: var(--bitchord-red);
+  color: #ffffff;
+}
+
+.audio-wave-anim {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 14px;
+  height: 12px;
+}
+
+.audio-wave-anim span {
+  width: 2px;
+  background: currentColor;
+  border-radius: 1px;
+  height: 3px;
+  transition: height 0.15s ease;
+}
+
+.eq-audio-btn.playing .audio-wave-anim span:nth-child(1) {
+  animation: waveBar 0.6s ease infinite alternate;
+}
+.eq-audio-btn.playing .audio-wave-anim span:nth-child(2) {
+  animation: waveBar 0.8s ease 0.2s infinite alternate;
+}
+.eq-audio-btn.playing .audio-wave-anim span:nth-child(3) {
+  animation: waveBar 0.5s ease 0.4s infinite alternate;
+}
+.eq-audio-btn.playing .audio-wave-anim span:nth-child(4) {
+  animation: waveBar 0.7s ease 0.1s infinite alternate;
+}
+
+@keyframes waveBar {
+  0% { height: 3px; }
+  100% { height: 12px; }
+}
+
+/* ================= SPOTLIGHT INTERACTION ON CARDS ================= */
+.bento-card,
+.platform-card,
+.platform-btn {
+  position: relative;
+  transition: border-color 0.25s ease, background-color 0.25s ease;
+  background-image: radial-gradient(
+    480px circle at var(--mouse-x, -500px) var(--mouse-y, -500px),
+    rgba(250, 88, 106, 0.08),
+    transparent 65%
+  );
+}
+
+.bento-card:hover,
+.platform-card:hover,
+.platform-btn:hover {
+  border-color: rgba(250, 88, 106, 0.3);
+}
+
+/* ================= SCROLL REVEAL TRANSITIONS ================= */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.reveal.revealed {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 /* ================= BENCHMARKS MATRIX ================= */
