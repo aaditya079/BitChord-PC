@@ -1,0 +1,25 @@
+# Maintainer: Aaditya Srinivasan <aadityasrinivasan079@gmail.com>
+pkgname=bitchord-pc
+pkgver=2.2.0
+pkgrel=1
+pkgdesc="Native YouTube Music desktop client in Rust"
+arch=('x86_64')
+url="https://github.com/aaditya079/BitChord-PC"
+license=('GPL-3.0-only')
+depends=('alsa-lib' 'gtk3' 'webkit2gtk-4.1' 'dbus' 'openssl')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "BitChord-PC-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+package() {
+  cd "BitChord-PC-$pkgver"
+  install -Dm755 "target/release/bitchord" "$pkgdir/usr/bin/bitchord"
+  install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
