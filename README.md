@@ -91,8 +91,9 @@ Defensible, reproducible resource benchmarks measured under consistent desktop l
 - **Methodology:** 10-minute continuous playback of 160 kbps Opus stream at 50% system volume, default audio output.
 - **Cold Startup:** Measured via high-resolution performance timers from process spawn until the first GUI frame is painted. Reported values represent the **median of 10 clean cold runs** (cleared filesystem disk cache).
 - **Memory Footprint:** Working Set (physical RAM currently mapped to process) and Private Bytes (committed virtual memory unshared with other processes) sampled via Windows performance counters.
+- **Reproduce these benchmarks:** Run [`benchmarks/measure.ps1`](benchmarks/measure.ps1) locally to measure cold window-ready latency, idle Working Set, and Private Bytes on your own machine.
 
-| Metric | BitChord PC (v2.1.1) | Standard Web / Electron Client |
+| Metric | BitChord PC (v2.2.0) | Standard Web / Electron Client |
 | :--- | :--- | :--- |
 | **Cold Startup Time (Median)** | **182 ms** | ~2,500 – 4,000 ms |
 | **Memory (Idle Working Set)** | **42 MB** *(Private: 26 MB)* | ~220 – 350 MB |
@@ -104,17 +105,17 @@ Defensible, reproducible resource benchmarks measured under consistent desktop l
 
 ## Installation
 
-Official release packages are available from the [v2.1.1 Release](https://github.com/aaditya079/BitChord-PC/releases/tag/v2.1.1):
+Official release packages are available from the [v2.2.0 Release](https://github.com/aaditya079/BitChord-PC/releases/tag/v2.2.0):
 
 | Platform | Architecture / Format | Status | Download Link |
 | :--- | :--- | :--- | :--- |
-| **Windows** | x64 Setup Installer | Verified Release | [`bitchord-setup-2.1.1.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1.exe) |
-| **Windows** | ARM64 Setup Installer | Verified Release | [`bitchord-setup-2.1.1-arm64.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1-arm64.exe) |
-| **Windows** | x64 Portable Archive | Verified Release | [`bitchord-portable-2.1.1.zip`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-portable-2.1.1.zip) |
-| **macOS** | Apple Silicon DMG | Community Pre-built (Experimental) | [`bitchord-setup-2.1.1-macos-aarch64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1-macos-aarch64.dmg) |
-| **macOS** | Intel x86_64 DMG | Community Pre-built (Experimental) | [`bitchord-setup-2.1.1-macos-x86_64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-setup-2.1.1-macos-x86_64.dmg) |
-| **Linux** | x86_64 Tarball Installer | Community Pre-built (Experimental) | [`bitchord-2.1.1-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-2.1.1-linux-x86_64.tar.gz) |
-| **Linux** | x86_64 Portable Tarball | Community Pre-built (Experimental) | [`bitchord-portable-2.1.1-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.1.1/bitchord-portable-2.1.1-linux-x86_64.tar.gz) |
+| **Windows** | x64 Setup Installer | Verified Release | [`bitchord-setup-2.2.0.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0.exe) |
+| **Windows** | ARM64 Setup Installer | Verified Release | [`bitchord-setup-2.2.0-arm64.exe`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0-arm64.exe) |
+| **Windows** | x64 Portable Archive | Verified Release | [`bitchord-portable-2.2.0.zip`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-portable-2.2.0.zip) |
+| **macOS** | Apple Silicon DMG | Community Pre-built (Experimental) | [`bitchord-setup-2.2.0-macos-aarch64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0-macos-aarch64.dmg) |
+| **macOS** | Intel x86_64 DMG | Community Pre-built (Experimental) | [`bitchord-setup-2.2.0-macos-x86_64.dmg`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0-macos-x86_64.dmg) |
+| **Linux** | x86_64 Tarball Installer | Community Pre-built (Experimental) | [`bitchord-2.2.0-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-2.2.0-linux-x86_64.tar.gz) |
+| **Linux** | x86_64 Portable Tarball | Community Pre-built (Experimental) | [`bitchord-portable-2.2.0-linux-x86_64.tar.gz`](https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-portable-2.2.0-linux-x86_64.tar.gz) |
 
 > Note on macOS and Linux builds: Packaged automatically by GitHub Actions CI from source. Because cross-platform automated builds are not yet certified on physical Apple Silicon or varied Linux distros, they are tagged as experimental.
 
