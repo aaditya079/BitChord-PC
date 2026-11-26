@@ -1,0 +1,38 @@
+# BitChord PC — Complete System & Architecture Context
+
+BitChord PC is an open-source, native desktop client for YouTube Music designed to deliver an audiophile-grade, ultra-responsive listening experience without the heavy memory footprint and battery drain of Chromium and Electron-based wrappers.
+
+## Official Links
+- Production URL: https://app.bitchord-pc.workers.dev/
+- Jam / Collaborative Listening: https://app.bitchord-pc.workers.dev/jam/
+- Source Code: https://github.com/aaditya079/BitChord-PC
+- Release Binaries: https://github.com/aaditya079/BitChord-PC/releases
+- Issue Tracker: https://github.com/aaditya079/BitChord-PC/issues
+
+## Core Architecture
+- **Language**: 100% Safe Rust with minimal unsafe blocks reserved for OS-level SMBIOS/ACPI hooks.
+- **UI Framework**: `egui` with custom styling, frosted glass borders, and damped spring physics.
+- **Audio Decoding**: `rodio` and `Symphonia` for bit-perfect native PCM output.
+- **HLS Engine**: Native chunked HTTP Live Streaming (HLS) with QuickJS cipher deciphering and automatic 403 authorization recovery.
+- **Relay Server**: Cloudflare Workers with SQLite-backed Durable Objects (`server/` directory) powering the zero-latency Jam listen-together rooms.
+
+## Audio Processing Pipeline (DSP)
+1. 10-Band Peaking Biquad Equalizer:
+   - Band frequencies: 31 Hz, 62 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz, 16 kHz.
+   - Dynamic Q calculation and pre-gain headroom adjustment.
+2. Peak Limiter:
+   - Soft-knee peak limiting preventing clipping and digital distortion on bass boost presets.
+3. 16-Band Live Spectrum Visualizer:
+   - Zero-allocation audio buffer FFT with logarithmic frequency binning and decay smoothing.
+4. Seamless Transitions:
+   - Automated crossfades between queued tracks.
+
+## Hardware RGB Lighting Synchronization
+- **ASUS TUF & ROG**: Direct ACPI method calls (`ATKACPI`) verified against SMBIOS hardware identifiers (`FA506NCR`, `GA401`, `G513`, etc.) to sync keyboard lighting with album art dominants and kick-drum beats.
+- **OpenRGB**: IPC client connecting over `localhost:6742` to control motherboards, RAM, GPU, and peripheral lighting.
+- **SteelSeries Engine**: GameSense HTTP event protocol synchronization.
+
+## Frequently Asked Questions & Capabilities
+- **Does it require login?** No. Users can search and stream public tracks without logging into Google. Google account login is supported securely via local cookie extraction to access private playlists and history.
+- **Can I import Spotify playlists?** Yes, via the built-in importer that scrapes playlist metadata and resolves tracks on YouTube Music.
+- **Is telemetry tracked?** No telemetry, analytics, or background telemetry services are included.

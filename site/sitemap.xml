@@ -1,13 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
-    <loc>https://aaditya079.github.io/BitChord-PC/</loc>
-    <lastmod>2026-11-26</lastmod>
-    <changefreq>weekly</changefreq>
+    <loc>https://app.bitchord-pc.workers.dev/</loc>
+    <lastmod>2026-11-27</lastmod>
+    <changefreq>daily</changefreq>
     <priority>1.0</priority>
-    <image:image><image:loc>https://aaditya079.github.io/BitChord-PC/og.png</image:loc></image:image>
-    <image:image><image:loc>https://aaditya079.github.io/BitChord-PC/img/app/now-playing-1600.webp</image:loc></image:image>
-    <image:image><image:loc>https://aaditya079.github.io/BitChord-PC/img/app/jp-1600.webp</image:loc></image:image>
-    <image:image><image:loc>https://aaditya079.github.io/BitChord-PC/img/app/spinning-record-1600.webp</image:loc></image:image>
+    <image:image>
+      <image:loc>https://app.bitchord-pc.workers.dev/og.png</image:loc>
+      <image:title>BitChord PC — Native YouTube Music Desktop Client in Rust</image:title>
+      <image:caption>BitChord PC zero-Electron desktop music player with 10-band equalizer and 42 MB RAM</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://app.bitchord-pc.workers.dev/img/app/now-playing-1600.webp</image:loc>
+      <image:title>BitChord PC Now Playing UI Interface</image:title>
+      <image:caption>Native desktop interface featuring live spectrum analyzer and biquad equalizer</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://app.bitchord-pc.workers.dev/img/app/jp-1600.webp</image:loc>
+      <image:title>BitChord PC Word-Synced Lyrics &amp; Romanization</image:title>
+      <image:caption>Karaoke-style synchronized lyrics with Japanese romaji, furigana, and spring physics</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://app.bitchord-pc.workers.dev/img/app/spinning-record-1600.webp</image:loc>
+      <image:title>BitChord PC Vinyl Record Visualizer Mode</image:title>
+      <image:caption>Vinyl spinning theme with beat-reactive glow and ambient lighting</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://app.bitchord-pc.workers.dev/jam/</loc>
+    <lastmod>2026-11-27</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
   </url>
 </urlset>

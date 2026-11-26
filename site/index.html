@@ -3,102 +3,209 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>BitChord PC — Native YouTube Music Desktop Client in Rust</title>
-  <meta name="description" content="Native YouTube Music desktop client in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band live spectrum, synced lyrics, and zero Electron.">
-  <meta name="keywords" content="BitChord PC, YouTube Music desktop app, native music player, Rust audio player, egui, rodio, 10-band equalizer, 16-band spectrum, OpenRGB, ASUS Aura, SteelSeries, synced lyrics, Spotify import, open source">
+  <title>BitChord PC — Native YouTube Music Desktop Client in Rust (Zero Electron)</title>
+  <meta name="description" content="High-performance native YouTube Music desktop client in Rust &amp; egui. Ultra-low 42 MB RAM, 10-band biquad EQ, 16-band spectrum, synced lyrics &amp; hardware RGB sync.">
+  <meta name="keywords" content="YouTube Music desktop app, native YouTube Music client, YouTube Music for Windows 11, YouTube Music PC, BitChord PC, lightweight music player, low RAM music player, Rust audio player, egui, rodio, 10-band equalizer, biquad EQ, 16-band spectrum visualizer, OpenRGB, ASUS Aura sync, ASUS TUF ROG RGB, SteelSeries GameSense, synced lyrics PC, YouTube Music karaoke, Spotify playlist importer, zero Electron YouTube Music, open source music player">
   <meta name="author" content="BitChord Project">
   <meta name="application-name" content="BitChord PC">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <meta name="theme-color" content="#0c0a0e">
-  <link rel="canonical" href="https://aaditya079.github.io/BitChord-PC/">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="https://app.bitchord-pc.workers.dev/">
+  <link rel="alternate" hreflang="x-default" href="https://app.bitchord-pc.workers.dev/">
+  <link rel="alternate" hreflang="en" href="https://app.bitchord-pc.workers.dev/">
 
   <!-- Open Graph / Meta -->
   <meta property="og:type" content="website">
   <meta property="og:locale" content="en_US">
   <meta property="og:site_name" content="BitChord PC">
-  <meta property="og:title" content="BitChord PC — Native YouTube Music Desktop Client in Rust">
+  <meta property="og:title" content="BitChord PC — Native YouTube Music Desktop Client in Rust (Zero Electron)">
   <meta property="og:description" content="Native YouTube Music desktop client in Rust and egui. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band spectrum, synced lyrics, and zero Electron.">
-  <meta property="og:url" content="https://aaditya079.github.io/BitChord-PC/">
-  <meta property="og:image" content="https://aaditya079.github.io/BitChord-PC/og.png">
+  <meta property="og:url" content="https://app.bitchord-pc.workers.dev/">
+  <meta property="og:image" content="https://app.bitchord-pc.workers.dev/og.png">
+  <meta property="og:image:secure_url" content="https://app.bitchord-pc.workers.dev/og.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="BitChord PC native Rust YouTube Music desktop client">
+  <meta property="og:image:alt" content="BitChord PC native Rust YouTube Music desktop client preview">
 
   <!-- Twitter / X -->
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@aaditya079">
+  <meta name="twitter:creator" content="@aaditya079">
   <meta name="twitter:title" content="BitChord PC — Native YouTube Music Desktop Client in Rust">
-  <meta name="twitter:description" content="42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band spectrum, synced lyrics, and zero Electron.">
-  <meta name="twitter:image" content="https://aaditya079.github.io/BitChord-PC/og.png">
+  <meta name="twitter:description" content="Zero Electron. 42 MB idle RAM, 182 ms cold start, 10-band biquad EQ, 16-band spectrum, synced lyrics &amp; hardware RGB sync.">
+  <meta name="twitter:image" content="https://app.bitchord-pc.workers.dev/og.png">
+  <meta name="twitter:image:alt" content="BitChord PC native desktop music player preview">
 
   <!-- Structured Data -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    "name": "BitChord PC",
-    "operatingSystem": "Windows 10, Windows 11, macOS 11+, Linux",
-    "applicationCategory": "MultimediaApplication",
-    "softwareVersion": "2.2.0",
-    "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-    "url": "https://aaditya079.github.io/BitChord-PC/",
-    "downloadUrl": "https://github.com/aaditya079/BitChord-PC/releases/latest",
-    "codeRepository": "https://github.com/aaditya079/BitChord-PC",
-    "screenshot": "https://aaditya079.github.io/BitChord-PC/img/app/now-playing-1600.webp",
-    "featureList": "10-band peaking biquad EQ, 16-band live spectrum visualizer, damped spring physics UI, word-synced lyrics, Spotify playlist importer, ASUS TUF/ROG & OpenRGB & SteelSeries hardware sync, Sleep Timer, Listening Replay",
-    "sameAs": [
-      "https://github.com/aaditya079/BitChord-PC",
-      "https://github.com/aaditya079/BitChord-PC/releases"
-    ],
-    "author": {
-      "@type": "Organization",
-      "name": "BitChord Project",
-      "url": "https://github.com/aaditya079/BitChord-PC"
-    },
-    "offers": {
-      "@type": "Offer",
-      "price": "0",
-      "priceCurrency": "USD"
-    },
-    "description": "Native YouTube Music desktop client built in Rust and egui with rodio audio decoding, 10-band biquad EQ, 16-band live spectrum visualizer, word-synced lyrics, and hardware RGB sync."
-  }
-  </script>
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "mainEntity": [
+    "@graph": [
       {
-        "@type": "Question",
-        "name": "How much RAM does BitChord PC use compared to Electron apps?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "BitChord PC uses ~42 MB idle Working Set (~68 MB during active playback) and starts in ~182 ms, compared to 220–700 MB and 2.5–4.0s startup for Chromium/Electron YouTube Music wrappers."
-        }
+        "@type": "WebSite",
+        "@id": "https://app.bitchord-pc.workers.dev/#website",
+        "url": "https://app.bitchord-pc.workers.dev/",
+        "name": "BitChord PC",
+        "description": "Native YouTube Music desktop client in Rust & egui.",
+        "publisher": {
+          "@id": "https://app.bitchord-pc.workers.dev/#organization"
+        },
+        "inLanguage": "en-US"
       },
       {
-        "@type": "Question",
-        "name": "Which operating systems does BitChord PC support?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "BitChord PC provides native builds for Windows (x64 and ARM64 installers and portable zips), macOS (Apple Silicon and Intel DMGs), and Linux (x86_64 tarballs and an Arch Linux PKGBUILD)."
-        }
+        "@type": "Organization",
+        "@id": "https://app.bitchord-pc.workers.dev/#organization",
+        "name": "BitChord Project",
+        "url": "https://app.bitchord-pc.workers.dev/",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://app.bitchord-pc.workers.dev/icon-512.png",
+          "width": 512,
+          "height": 512
+        },
+        "sameAs": [
+          "https://github.com/aaditya079/BitChord-PC",
+          "https://github.com/aaditya079/BitChord-PC/releases"
+        ]
       },
       {
-        "@type": "Question",
-        "name": "Which RGB keyboards and peripherals are supported?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "BitChord PC supports ambient and beat-reactive RGB sync for ASUS TUF and ROG laptops (via SMBIOS-verified ATKACPI), OpenRGB (localhost:6742), and SteelSeries Engine 3 (GameSense)."
-        }
+        "@type": "SoftwareApplication",
+        "@id": "https://app.bitchord-pc.workers.dev/#software",
+        "name": "BitChord PC",
+        "alternateName": [
+          "BitChord",
+          "BitChord Desktop",
+          "Native YouTube Music Desktop Client"
+        ],
+        "operatingSystem": "Windows 10, Windows 11, macOS 11+, Linux",
+        "applicationCategory": "MultimediaApplication",
+        "applicationSubCategory": "Audio Player",
+        "softwareVersion": "2.2.0",
+        "fileSize": "25MB",
+        "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+        "url": "https://app.bitchord-pc.workers.dev/",
+        "downloadUrl": "https://github.com/aaditya079/BitChord-PC/releases/latest",
+        "codeRepository": "https://github.com/aaditya079/BitChord-PC",
+        "screenshot": "https://app.bitchord-pc.workers.dev/img/app/now-playing-1600.webp",
+        "featureList": "42 MB Idle RAM, 182 ms Startup Time, 10-band peaking biquad EQ, 16-band live spectrum visualizer, damped spring physics UI, word-synced lyrics with romaji, Spotify playlist importer, ASUS TUF/ROG & OpenRGB & SteelSeries hardware sync, Sleep Timer, Listening Replay, Zero Electron, Zero Telemetry",
+        "memoryRequirements": "42 MB RAM",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "author": {
+          "@id": "https://app.bitchord-pc.workers.dev/#organization"
+        },
+        "description": "High-performance native YouTube Music desktop client built in Rust and egui. Features 42 MB idle RAM, 10-band peaking biquad EQ, 16-band live spectrum visualizer, word-synced lyrics, and beat-reactive hardware RGB sync."
       },
       {
-        "@type": "Question",
-        "name": "Is BitChord PC free and open source?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "Yes. BitChord PC is free, has zero telemetry, and is licensed under GPL-3.0 on GitHub."
-        }
+        "@type": "BreadcrumbList",
+        "@id": "https://app.bitchord-pc.workers.dev/#breadcrumb",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "Home",
+            "item": "https://app.bitchord-pc.workers.dev/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Features",
+            "item": "https://app.bitchord-pc.workers.dev/#features"
+          },
+          {
+            "@type": "ListItem",
+            "position": 3,
+            "name": "10-Band Equalizer",
+            "item": "https://app.bitchord-pc.workers.dev/#equalizer"
+          },
+          {
+            "@type": "ListItem",
+            "position": 4,
+            "name": "Benchmarks",
+            "item": "https://app.bitchord-pc.workers.dev/#performance"
+          },
+          {
+            "@type": "ListItem",
+            "position": 5,
+            "name": "Download",
+            "item": "https://app.bitchord-pc.workers.dev/#download"
+          }
+        ]
+      },
+      {
+        "@type": "FAQPage",
+        "@id": "https://app.bitchord-pc.workers.dev/#faq",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "How much RAM does BitChord PC use compared to Electron apps?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "BitChord PC uses ~42 MB idle Working Set (~68 MB during active 160 kbps playback) and cold-starts in ~182 ms, compared to 220–700 MB and 2.5–4.0s startup for Chromium and Electron-based YouTube Music desktop wrappers."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Which operating systems and architectures does BitChord PC support?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "BitChord PC provides precompiled native builds for Windows 10 & 11 (x64 and ARM64 installers and portable zips), macOS 11+ (Apple Silicon M-series and Intel DMGs), and Linux (x86_64 tarballs and an Arch Linux PKGBUILD)."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does the 10-band biquad equalizer and audio engine work?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "The audio engine uses rodio and Symphonia to process native PCM audio. It features a 10-band peaking biquad equalizer (31 Hz to 16 kHz), peak limiter, zero-allocation 16-band live spectrum analyzer, and automatic crossfades between tracks."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Which RGB keyboards and peripherals are supported?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "BitChord PC supports ambient and beat-reactive RGB backlight synchronization for ASUS TUF and ROG gaming laptops (via SMBIOS-verified ATKACPI), OpenRGB (localhost:6742), and SteelSeries Engine 3 (GameSense)."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does BitChord PC support synchronized lyrics and translation?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. BitChord PC includes word-synced and syllable-level karaoke lyrics with built-in romanization for Japanese (Romaji), Korean (Revised Romanization), and Chinese (Pinyin), smoothly rendered with damped spring physics."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I import my playlists from Spotify to YouTube Music?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. The built-in Spotify importer lets you paste any public Spotify playlist URL to automatically match and queue tracks on YouTube Music without requiring a Spotify Premium subscription."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is BitChord PC free and open source?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. BitChord PC is 100% free, has zero telemetry or tracking, and is licensed under the GNU General Public License v3.0 (GPL-3.0) on GitHub."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does the collaborative Listen Together (Jam) feature work?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "BitChord PC Jam enables synchronous group listening via lightweight Cloudflare Durable Objects. Only playback timestamps and control signals are shared, keeping audio streaming local to each listener."
+            }
+          }
+        ]
       }
     ]
   }
@@ -436,24 +543,41 @@
   <section class="section" id="faq">
     <div class="section-header">
       <span class="section-tag">FAQ</span>
-      <h2 class="section-title">Common questions.</h2>
+      <h2 class="section-title">Frequently Asked Questions</h2>
+      <p class="section-subtitle">Everything you need to know about BitChord PC's performance, audio DSP, and privacy.</p>
     </div>
     <div class="bento-grid">
       <div class="bento-card">
-        <h3 class="card-title">How much RAM does BitChord PC use?</h3>
-        <p class="card-desc">~42 MB idle Working Set and ~68 MB during active playback, with a 182 ms median cold start—about 6–10x lighter than Electron clients.</p>
+        <h3 class="card-title">How much RAM does BitChord PC use compared to Electron apps?</h3>
+        <p class="card-desc">BitChord PC uses ~42 MB idle Working Set (~68 MB during active 160 kbps playback) and cold-starts in ~182 ms, compared to 220–700 MB and 2.5–4.0s startup for Chromium and Electron-based YouTube Music desktop wrappers.</p>
       </div>
       <div class="bento-card">
-        <h3 class="card-title">Which platforms are supported?</h3>
-        <p class="card-desc">Windows 10/11 (x64 &amp; ARM64 installers and portable zips), macOS 11+ (Apple Silicon &amp; Intel DMGs), and Linux (x86_64 tarballs &amp; Arch PKGBUILD).</p>
+        <h3 class="card-title">Which operating systems and architectures are supported?</h3>
+        <p class="card-desc">Windows 10 &amp; 11 (x64 and ARM64 installers and portable zips), macOS 11+ (Apple Silicon M-series and Intel DMGs), and Linux (x86_64 tarballs and an Arch Linux PKGBUILD).</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">How does the 10-band biquad equalizer and audio engine work?</h3>
+        <p class="card-desc">The audio engine uses rodio and Symphonia to process native PCM audio. It features a 10-band peaking biquad equalizer (31 Hz to 16 kHz), peak limiter, zero-allocation 16-band live spectrum analyzer, and automatic crossfades between tracks.</p>
       </div>
       <div class="bento-card">
         <h3 class="card-title">Which RGB devices work with beat sync?</h3>
-        <p class="card-desc">ASUS TUF/ROG laptops (via SMBIOS-verified ATKACPI), OpenRGB (<code>localhost:6742</code>), and SteelSeries Engine 3 (GameSense).</p>
+        <p class="card-desc">ASUS TUF/ROG laptops (via SMBIOS-verified ATKACPI), OpenRGB (<code>localhost:6742</code>), and SteelSeries Engine 3 (GameSense) for beat-reactive lighting.</p>
       </div>
       <div class="bento-card">
-        <h3 class="card-title">Is it free and open source?</h3>
-        <p class="card-desc">Yes—GPL-3.0 licensed on GitHub with zero telemetry, SHA-256 verified auto-updates, and reproducible local benchmarks.</p>
+        <h3 class="card-title">Does BitChord PC support synchronized lyrics and translation?</h3>
+        <p class="card-desc">Yes. Word-synced and syllable-level karaoke lyrics with built-in romanization for Japanese (Romaji), Korean (Revised Romanization), and Chinese (Pinyin), rendered with damped spring physics.</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">Can I import playlists from Spotify to YouTube Music?</h3>
+        <p class="card-desc">Yes. The built-in Spotify importer lets you paste any public Spotify playlist URL to automatically match, queue, and download tracks on YouTube Music without requiring Spotify Premium.</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">Is BitChord PC free and open source?</h3>
+        <p class="card-desc">Yes—GPL-3.0 licensed on GitHub with zero telemetry, zero analytics tracking, SHA-256 verified updates, and reproducible local benchmarks.</p>
+      </div>
+      <div class="bento-card">
+        <h3 class="card-title">How does the collaborative Listen Together (Jam) feature work?</h3>
+        <p class="card-desc">BitChord PC Jam enables synchronous group listening via lightweight Cloudflare Durable Objects. Only playback timestamps and control signals are shared, keeping audio streaming local to each listener.</p>
       </div>
     </div>
   </section>

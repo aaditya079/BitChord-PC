@@ -1,0 +1,29 @@
+# BitChord PC
+> Native YouTube Music Desktop Client in Rust & egui
+
+BitChord PC is a lightweight, high-performance desktop client for YouTube Music built in Rust. It eliminates Chromium/Electron overhead entirely, running with ~42 MB idle RAM (~68 MB active playback) and a 182 ms instant cold start.
+
+- Canonical Website: https://app.bitchord-pc.workers.dev/
+- GitHub Repository: https://github.com/aaditya079/BitChord-PC
+- Latest Releases: https://github.com/aaditya079/BitChord-PC/releases/latest
+- License: GNU General Public License v3.0 (GPL-3.0)
+
+## Key Technical Specifications
+- Engine: Rust, egui (immediate mode GUI via WGPU / OpenGL), rodio, Symphonia PCM decoding.
+- Audio DSP: 10-band peaking biquad equalizer (31 Hz to 16 kHz), peak limiter, Automix crossfades, 16-band live FFT spectrum analyzer.
+- Audio Formats: 160 kbps Opus (native YouTube Music HLS with 403 recovery), optional lossless FLAC (Monochrome & JioSaavn integration).
+- Lyrics Engine: Syllable and word-synced karaoke lyrics with romanization for Japanese (Romaji), Korean, and Chinese (Pinyin).
+- Hardware Lighting: Beat-reactive RGB synchronization for ASUS TUF & ROG laptops (SMBIOS ATKACPI), OpenRGB, and SteelSeries Engine (GameSense).
+- Migrations: Built-in Spotify playlist importer and offline track caching.
+- Telemetry & Privacy: Zero telemetry, zero analytics tracking, zero ad injection, no Google account required.
+
+## Benchmarks vs Electron Clients
+- Idle RAM: 42 MB (BitChord PC) vs 220–700 MB (Electron / Web Wrappers)
+- Active Playback RAM: 68 MB (BitChord PC) vs 350–850 MB (Electron)
+- Median Cold Startup: 182 ms (BitChord PC) vs 2,500–4,000 ms (Electron)
+- Idle CPU: 0.0% (BitChord PC) vs 2.5–6.0% (Electron render loops)
+
+## Supported Platforms & Installers
+- Windows 10 & 11: 64-bit installer (.exe), ARM64 installer (.exe), Portable (.zip)
+- macOS 11+: Apple Silicon DMG (.dmg), Intel DMG (.dmg)
+- Linux: x86_64 tarball (.tar.gz), Arch Linux PKGBUILD
