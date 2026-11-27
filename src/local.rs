@@ -253,6 +253,21 @@ pub fn add(paths: Vec<PathBuf>) -> usize {
             st.index.push(Entry { path, track, no_cover });
             added += 1;
         }
+        if added > 0 {
+            st.index.sort_by(|a, b| {
+                let alb_a = a.track.album.as_ref().map(|l| l.name.as_str()).unwrap_or("");
+                let alb_b = b.track.album.as_ref().map(|l| l.name.as_str()).unwrap_or("");
+                if !alb_a.is_empty() && alb_a == alb_b {
+                    match (a.track.track_nr, b.track.track_nr) {
+                        (Some(na), Some(nb)) if na != nb => return na.cmp(&nb),
+                        (Some(_), None) => return std::cmp::Ordering::Less,
+                        (None, Some(_)) => return std::cmp::Ordering::Greater,
+                        _ => {}
+                    }
+                }
+                alb_a.cmp(alb_b).then_with(|| a.track.title.cmp(&b.track.title))
+            });
+        }
     }
     if added > 0 {
         REVISED.fetch_add(1, Ordering::Relaxed);
@@ -329,6 +344,19 @@ fn read_tags(path: &Path, ext: &str) -> (Track, Option<u32>, Option<Picture>) {
                             track.artists.push(crate::model::Link { id: None, name: artist });
                         }
                         track.album = tag(symphonia::core::meta::StandardTagKey::Album).map(|name| crate::model::Link { id: None, name });
+                        let track_num = tags.iter().find_map(|t| {
+                            if t.std_key == Some(symphonia::core::meta::StandardTagKey::TrackNumber) {
+                                match &t.value {
+                                    symphonia::core::meta::Value::String(s) => s.split('/').next().and_then(|v| v.trim().parse::<u16>().ok()),
+                                    symphonia::core::meta::Value::UnsignedInt(u) => Some(*u as u16),
+                                    symphonia::core::meta::Value::SignedInt(i) if *i > 0 => Some(*i as u16),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        });
+                        track.track_nr = track_num;
                     }
                 }
                 Err(e) => log::warn!("local {}: couldn't read the header: {e}", path.display()),

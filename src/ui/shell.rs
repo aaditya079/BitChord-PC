@@ -1058,9 +1058,23 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         let col = theme::with_alpha(theme::text(), focus);
         let g = widgets::galley(ui, &fmt_time(pos as u32), theme::semibold(11.5), theme::text(), 80.0);
         ui.painter().galley(pos2(text_l, cy + 2.0), g, col);
-        let left = fmt_time((total - pos).max(0.0) as u32);
-        let g = widgets::galley(ui, &format!("-{left}"), theme::semibold(11.5), theme::text(), 80.0);
-        ui.painter().galley(pos2(text_r - g.size().x, cy + 2.0), g, col);
+        let right_time = if app.show_total_duration {
+            fmt_time(total.max(0.0) as u32)
+        } else {
+            let left = fmt_time((total - pos).max(0.0) as u32);
+            format!("-{left}")
+        };
+        let g = widgets::galley(ui, &right_time, theme::semibold(11.5), theme::text(), 80.0);
+        let right_pos = pos2(text_r - g.size().x, cy + 2.0);
+        let right_rect = Rect::from_min_size(right_pos - vec2(4.0, 2.0), g.size() + vec2(8.0, 4.0));
+        let time_resp = ui.interact(right_rect, ui.id().with("shell_time_toggle"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(if app.show_total_duration { "Click to show remaining time" } else { "Click to show total length" });
+        if time_resp.clicked() {
+            app.show_total_duration = !app.show_total_duration;
+        }
+        let time_col = if time_resp.hovered() { theme::text() } else { col };
+        ui.painter().galley(right_pos, g, time_col);
     }
 
     // Right: favourite, lyrics, up next, speed, volume. Hovering the volume slides a
@@ -1416,19 +1430,17 @@ fn sleep_timer_button(app: &mut App, ui: &mut Ui) {
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(140.0);
         if ui.button("Off").clicked() {
-            app.sleep_until = None;
-            app.sleep_after_track = false;
+            app.clear_sleep_timer();
             ui.close();
         }
         for mins in [15u64, 30, 45, 60] {
             if ui.button(format!("{mins} minutes")).clicked() {
-                app.sleep_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(mins * 60));
-                app.sleep_after_track = false;
+                app.set_sleep_timer(std::time::Duration::from_secs(mins * 60));
                 ui.close();
             }
         }
         if ui.button("End of current track").clicked() {
-            app.sleep_until = None;
+            app.clear_sleep_timer();
             app.sleep_after_track = true;
             ui.close();
         }

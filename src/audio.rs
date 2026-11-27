@@ -50,6 +50,8 @@ pub enum AudioCmd {
     /// Play through this device (cpal's id) whenever it's connected; None follows the
     /// system default.
     SetDevice(Option<String>),
+    /// Enable or disable WASAPI exclusive bit-perfect mode on Windows.
+    SetExclusive(bool),
 }
 
 pub enum AudioEvent {
@@ -116,6 +118,7 @@ pub struct AudioStatus {
     outgoing_position_ms: AtomicU64,
     outgoing_sampled_at: AtomicU64,
     outgoing_playing: AtomicBool,
+    pub exclusive: AtomicBool,
 }
 
 impl AudioStatus {
@@ -671,6 +674,11 @@ impl AudioHandle {
         self.status.volume.store(v.to_bits(), Ordering::Relaxed);
         self.send(AudioCmd::Volume(v));
     }
+
+    pub fn set_exclusive(&self, on: bool) {
+        self.status.exclusive.store(on, Ordering::Relaxed);
+        self.send(AudioCmd::SetExclusive(on));
+    }
 }
 
 /// A seek that needs a new decoder built over the stream buffer (off the audio thread).
@@ -883,6 +891,7 @@ struct Output {
     /// Set by the device's error callback.
     lost: Arc<AtomicBool>,
     checked: Instant,
+    exclusive: bool,
 }
 
 impl Output {
@@ -896,7 +905,7 @@ impl Output {
         let rate = config.as_ref().and_then(|c| std::num::NonZero::new(c.sample_rate())).unwrap_or(std::num::NonZero::new(48_000).unwrap());
         let (mixer, source) = rodio::mixer::mixer(channels, rate);
         let lost = Arc::new(AtomicBool::new(false));
-        (Self { mixer, slot: Arc::new(std::sync::Mutex::new(Some(source))), sink: None, device: None, preferred, lost, checked: Instant::now() }, found)
+        (Self { mixer, slot: Arc::new(std::sync::Mutex::new(Some(source))), sink: None, device: None, preferred, lost, checked: Instant::now(), exclusive: false }, found)
     }
 
     /// Opens the picked device, or the default one. False if there's none to open.
@@ -917,7 +926,19 @@ impl Output {
                 let _ = tx.send(AudioCmd::DeviceLost);
             }
         };
-        let sink = match DeviceSinkBuilder::from_device(device).and_then(|b| b.with_error_callback(on_error).open_sink_or_fallback()) {
+        let mut builder = DeviceSinkBuilder::from_device(device.clone());
+        #[cfg(target_os = "windows")]
+        if self.exclusive {
+            log::info!("audio: configuring exclusive bit-perfect stream for {:?}", id);
+            use rodio::cpal::traits::DeviceTrait;
+            if let Ok(configs) = device.supported_output_configs() {
+                if let Some(best) = configs.max_by_key(|c| c.max_sample_rate()) {
+                    let config = best.with_max_sample_rate();
+                    builder = builder.map(|b| b.with_supported_config(&config));
+                }
+            }
+        }
+        let sink = match builder.and_then(|b| b.with_error_callback(on_error).open_sink_or_fallback()) {
             Ok(s) => s,
             Err(e) => {
                 log::warn!("audio: couldn't open the output device: {e}");
@@ -1424,6 +1445,13 @@ fn run(
                     output.open(tx.clone(), &status);
                 }
             }
+            Ok(AudioCmd::SetExclusive(on)) => {
+                log::info!("audio: exclusive mode set to {on}");
+                output.exclusive = on;
+                if output.sink.is_some() {
+                    output.open(tx.clone(), &status);
+                }
+            }
             Ok(AudioCmd::Volume(v)) => {
                 let v = slider_gain(&status, v);
                 player.set_volume(v * norm_gain(&status, shared.as_deref()));
@@ -1527,7 +1555,7 @@ mod tests {
         use std::num::NonZero;
         let (mixer, source) = rodio::mixer::mixer(NonZero::new(2).unwrap(), NonZero::new(48_000).unwrap());
         // Let go of while paused: nothing pulls the mixer.
-        let output = Output { mixer, slot: Arc::new(std::sync::Mutex::new(Some(source))), sink: None, device: None, preferred: None, lost: Default::default(), checked: Instant::now() };
+        let output = Output { mixer, slot: Arc::new(std::sync::Mutex::new(Some(source))), sink: None, device: None, preferred: None, lost: Default::default(), exclusive: false, checked: Instant::now() };
         let mut player = Player::connect_new(&output.mixer);
         player.set_volume(0.5);
         player.append(rodio::buffer::SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(48_000).unwrap(), vec![0.0; 96_000]));
@@ -1545,7 +1573,7 @@ mod tests {
         use std::num::NonZero;
         let (mixer, source) = rodio::mixer::mixer(NonZero::new(2).unwrap(), NonZero::new(48_000).unwrap());
         // Playing, through a device that stopped pulling before it reported itself gone.
-        let output = Output { mixer, slot: Arc::new(std::sync::Mutex::new(None)), sink: None, device: None, preferred: None, lost: Default::default(), checked: Instant::now() };
+        let output = Output { mixer, slot: Arc::new(std::sync::Mutex::new(None)), sink: None, device: None, preferred: None, lost: Default::default(), exclusive: false, checked: Instant::now() };
         let mut player = Player::connect_new(&output.mixer);
         player.set_volume(0.25);
         player.append(rodio::buffer::SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(48_000).unwrap(), vec![0.5; 96_000]));

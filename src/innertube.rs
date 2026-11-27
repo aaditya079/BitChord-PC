@@ -18,6 +18,8 @@ pub struct Stream {
     pub loudness_db: Option<f32>,
     /// Opus in WebM; otherwise AAC in MP4.
     pub opus: bool,
+    /// Peak replay timestamp in seconds ("most replayed" section).
+    pub most_replayed: Option<f32>,
 }
 
 /// A format's loudness relative to YouTube's target, falling back to the track-level
@@ -28,6 +30,38 @@ pub fn loudness(resp: &Value, format: &Value) -> Option<f32> {
         let track = a["trackAbsoluteLoudnessLkfs"].as_f64().or_else(|| a["perceptualLoudnessDb"].as_f64())?;
         Some((track - a["loudnessTargetLkfs"].as_f64().unwrap_or(-14.0)) as f32)
     })
+}
+
+/// Finds the "most replayed" timestamp (seconds) from YouTube player response heatmarkers if available.
+pub fn extract_most_replayed(resp: &Value) -> Option<f32> {
+    fn search_heatmarkers(v: &Value, best: &mut Option<(f32, f64)>) {
+        if let Some(obj) = v.as_object() {
+            if let Some(hm) = obj.get("heatMarkerRenderer") {
+                let start_ms = hm["timeRangeStartMillis"].as_f64().unwrap_or(0.0);
+                let score = hm["heatMarkerIntensityScoreNormalized"].as_f64().unwrap_or(0.0);
+                if score > 0.0 {
+                    if let Some((_, best_score)) = best {
+                        if score > *best_score {
+                            *best = Some(((start_ms / 1000.0) as f32, score));
+                        }
+                    } else {
+                        *best = Some(((start_ms / 1000.0) as f32, score));
+                    }
+                }
+            } else {
+                for child in obj.values() {
+                    search_heatmarkers(child, best);
+                }
+            }
+        } else if let Some(arr) = v.as_array() {
+            for child in arr {
+                search_heatmarkers(child, best);
+            }
+        }
+    }
+    let mut best = None;
+    search_heatmarkers(resp, &mut best);
+    best.map(|(t, _)| t)
 }
 
 /// The Android VR client's queue for an album's playlist (`OLAK5uy_…`). Unlike the web
@@ -70,6 +104,7 @@ pub async fn album_queue(http: &reqwest::Client, playlist_id: &str) -> anyhow::R
 /// `opus`: Opus (itag 251, about 130-160 kbps) when the song has it, else AAC.
 pub async fn audio_stream(http: &reqwest::Client, video_id: &str, visitor_data: &str, opus: bool) -> anyhow::Result<Stream> {
     let resp = player(http, video_id, visitor_data).await?;
+    let most_replayed = extract_most_replayed(&resp);
     // Opus in WebM (251) when asked for; AAC-LC in MP4 (140), HE-AAC (139) as fallbacks.
     let formats = resp["streamingData"]["adaptiveFormats"].as_array().map(Vec::as_slice).unwrap_or_default();
     let itags: &[u64] = if opus { &[251, 140, 139] } else { &[140, 139] };
@@ -84,6 +119,7 @@ pub async fn audio_stream(http: &reqwest::Client, video_id: &str, visitor_data: 
                 duration_ms: f["approxDurationMs"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0),
                 loudness_db: loudness(&resp, f),
                 opus: *itag == 251,
+                most_replayed,
             })
         })
         .ok_or_else(|| anyhow::anyhow!("no audio stream in visionOS player response"))

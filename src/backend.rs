@@ -480,6 +480,8 @@ pub enum Resp {
     UpgradingQuality { generation: u64, active: bool },
     /// What `generation`'s decoder is being fed, whatever the source (stats for nerds).
     StreamStats { generation: u64, stats: stream::Stats },
+    /// Peak replay timestamp (seconds) from YouTube heatmap markers.
+    MostReplayed { generation: u64, at_sec: f32 },
     /// Play `generation` is the song version of the music video that was asked for
     /// (`None`: that song wouldn't start, and the music video plays after all).
     PlayingAs { generation: u64, listed: String, song: Option<Track> },
@@ -2727,17 +2729,24 @@ impl Backend {
 
     /// Anonymous WebMusic stream resolution (e.g. for COPPA / kids tracks where visionOS fails).
     async fn webmusic_anon_stream(&self, video_id: &str, opus: bool) -> anyhow::Result<ResolvedStream> {
-        let plain = |s: innertube::Stream, ua: &str| ResolvedStream {
-            media: stream::Media::File(s.url),
-            starts: None,
-            size: s.size,
-            duration_ms: s.duration_ms,
-            user_agent: ua.to_owned(),
-            loudness_db: s.loudness_db,
-            format: stream::Format::from_opus(s.opus),
-            info: None,
-            ranging: stream::Ranging::Query,
-            data: None,
+        let plain = |s: innertube::Stream, ua: &str| {
+            if let Some(at_sec) = s.most_replayed {
+                let gen_id = self.audio.status.wanted_gen.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = self.tx.send(Resp::MostReplayed { generation: gen_id, at_sec });
+                (self.wake)();
+            }
+            ResolvedStream {
+                media: stream::Media::File(s.url),
+                starts: None,
+                size: s.size,
+                duration_ms: s.duration_ms,
+                user_agent: ua.to_owned(),
+                loudness_db: s.loudness_db,
+                format: stream::Format::from_opus(s.opus),
+                info: None,
+                ranging: stream::Ranging::Query,
+                data: None,
+            }
         };
         match webmusic::audio_stream_anon(&self.http(), &self.jsc, video_id, opus).await? {
             webmusic::Audio::YouTube(s) => Ok(plain(s, webmusic::UA)),
@@ -2749,17 +2758,24 @@ impl Backend {
     /// from it; Premium's web player takes Opus to mean its 774, ~256 kbps, where there
     /// is one). The hi-res source re-resolves by searching for `track` again.
     async fn resolve_from(&self, source: Source, video_id: &str, format: stream::Format, track: Option<&Track>) -> anyhow::Result<ResolvedStream> {
-        let plain = |s: innertube::Stream, ua: &str| ResolvedStream {
-            media: stream::Media::File(s.url),
-            starts: None,
-            size: s.size,
-            duration_ms: s.duration_ms,
-            user_agent: ua.to_owned(),
-            loudness_db: s.loudness_db,
-            format: stream::Format::from_opus(s.opus),
-            info: None,
-            ranging: stream::Ranging::Query,
-            data: None,
+        let plain = |s: innertube::Stream, ua: &str| {
+            if let Some(at_sec) = s.most_replayed {
+                let gen_id = self.audio.status.wanted_gen.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = self.tx.send(Resp::MostReplayed { generation: gen_id, at_sec });
+                (self.wake)();
+            }
+            ResolvedStream {
+                media: stream::Media::File(s.url),
+                starts: None,
+                size: s.size,
+                duration_ms: s.duration_ms,
+                user_agent: ua.to_owned(),
+                loudness_db: s.loudness_db,
+                format: stream::Format::from_opus(s.opus),
+                info: None,
+                ranging: stream::Ranging::Query,
+                data: None,
+            }
         };
         Ok(match source {
             Source::VisionOs => plain(self.visionos_stream(video_id, format == stream::Format::Opus).await?, innertube::UA),

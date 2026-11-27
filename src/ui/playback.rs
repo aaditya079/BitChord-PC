@@ -449,6 +449,7 @@ impl App {
         self.generation += 1;
         self.audio.status.wanted_gen.store(self.generation, Ordering::Relaxed);
         self.audio_info = None;
+        self.most_replayed = None;
         // The new song's stream stats arrive with its own decoder; a background
         // upgrade under way was for the song before it.
         self.stream_stats = None;

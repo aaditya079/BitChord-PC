@@ -91,6 +91,9 @@ impl App {
                 if !crate::local::is_local(&t.id) {
                     // a like says more than a play; the taste keeps the newest fifty
                     self.listening.liked(t.clone());
+                    if self.auto_download_liked && !crate::backend::is_downloaded(t) {
+                        self.backend.request(crate::backend::Req::Download { track: t.clone(), for_video: None });
+                    }
                 }
             } else {
                 self.liked.remove(&t.id);

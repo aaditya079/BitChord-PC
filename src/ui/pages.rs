@@ -864,6 +864,10 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
                 app.search = None;
             }
         }
+        ui.add_space(6.0);
+        if widgets::chip(ui, "In Library", app.search_in_library).clicked() {
+            app.search_in_library = !app.search_in_library;
+        }
     });
     if q.trim().is_empty() {
         ui.add_space(26.0);
@@ -894,9 +898,14 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     // Songs here can be dragged onto a playlist in the sidebar, but not into another order.
     let drag = &mut app.row_drag;
     let ids = |section: &str| egui::Id::unique(("search", section));
-    let tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows.shows(t)).collect();
-    let videos: Vec<&Track> = r.videos.iter().filter(|t| rows.shows(t)).collect();
-    let episodes: Vec<&Track> = r.episodes.iter().filter(|t| rows.shows(t)).collect();
+    let mut tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows.shows(t)).collect();
+    let mut videos: Vec<&Track> = r.videos.iter().filter(|t| rows.shows(t)).collect();
+    let mut episodes: Vec<&Track> = r.episodes.iter().filter(|t| rows.shows(t)).collect();
+    if app.search_in_library {
+        tracks.retain(|t| crate::backend::is_downloaded(t) || crate::local::is_local(&t.id));
+        videos.retain(|t| crate::backend::is_downloaded(t) || crate::local::is_local(&t.id));
+        episodes.retain(|t| crate::backend::is_downloaded(t) || crate::local::is_local(&t.id));
+    }
     if tracks.is_empty() && videos.is_empty() && r.artists.is_empty() && r.albums.is_empty() && r.playlists.is_empty() && r.podcasts.is_empty() && episodes.is_empty() {
         ui.add_space(18.0);
         ui.label(RichText::new("No results").font(theme::bold(20.0)).color(theme::text()));
@@ -1112,6 +1121,16 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let tracks = &c.tracks;
     let play_order = super::sorts::list_id(&app.page).and_then(|l| app.sorts.sorted(&l, tracks));
     let is_album = c.is_album;
+    if app.auto_update_playlists && !is_album && !more && !busy && run.is_none() && !app.auto_synced_playlists.contains(id) {
+        let downloaded_count = tracks.iter().filter(|t| crate::backend::is_downloaded(t)).count();
+        if downloaded_count > 0 && downloaded_count < tracks.len() {
+            let missing: Vec<Track> = tracks.iter().filter(|t| !crate::backend::is_downloaded(t) && !crate::local::is_local(&t.id)).cloned().collect();
+            if !missing.is_empty() {
+                app.auto_synced_playlists.insert(id.to_owned());
+                acts.push(Action::DownloadMany(Some(Target::Playlist(id.to_owned())), c.title.clone(), Some(missing)));
+            }
+        }
+    }
     let filter_on = app.coll_search.as_ref().is_some_and(|(fid, _)| fid == id);
     let selecting = app.selection.on(&app.page);
     let mut toggle_search = false;
@@ -1713,9 +1732,9 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
 /// account's cloud library — playable on any device, but YouTube Music converts what it
 /// takes, so a FLAC doesn't stay lossless. Local music plays straight from this
 /// computer, each file as it is.
-fn listening_stats_card(app: &App, ui: &mut Ui) {
-    let summary = app.listening.stats_summary();
-    if summary.total_plays == 0 {
+fn listening_stats_card(app: &mut App, ui: &mut Ui) {
+    let summary = app.listening.stats_summary_filtered(app.replay_year);
+    if summary.total_plays == 0 && app.replay_year.is_none() {
         return;
     }
     let hours = summary.total_secs / 3600;
@@ -1729,16 +1748,45 @@ fn listening_stats_card(app: &App, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Listening Replay").font(theme::semibold(15.0)).color(theme::text()));
-                ui.add_space(12.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} plays · {} · {} tracks · {} artists",
-                        summary.total_plays, time_str, summary.unique_tracks, summary.unique_artists
-                    ))
-                    .font(theme::regular(13.0))
-                    .color(theme::text_dim()),
-                );
+                ui.add_space(8.0);
+                for (year_opt, label) in [(None, "All time"), (Some(2026), "2026"), (Some(2025), "2025")] {
+                    if widgets::chip(ui, label, app.replay_year == year_opt).clicked() {
+                        app.replay_year = year_opt;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if pill(ui, "Export", Some(icon::DOWNLOAD), false).clicked() {
+                        if let Ok(json) = app.listening.export_json() {
+                            if let Some(path) = rfd::FileDialog::new().set_file_name("bitchord-listening-history.json").add_filter("JSON", &["json"]).save_file() {
+                                let _ = std::fs::write(&path, json);
+                                app.toast("Listening history exported");
+                            }
+                        }
+                    }
+                    if pill(ui, "Import", Some(icon::UPLOAD), false).clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                match app.listening.import_json(&content) {
+                                    Ok(n) => {
+                                        app.save_listening();
+                                        app.toast(format!("Imported {n} listening events"));
+                                    }
+                                    Err(e) => app.toast(format!("Import failed: {e}")),
+                                }
+                            }
+                        }
+                    }
+                });
             });
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} plays · {} · {} tracks · {} artists",
+                    summary.total_plays, time_str, summary.unique_tracks, summary.unique_artists
+                ))
+                .font(theme::regular(13.0))
+                .color(theme::text_dim()),
+            );
             if !summary.top_artists.is_empty() {
                 ui.add_space(6.0);
                 let top_line = summary
@@ -2087,7 +2135,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
         }
         SettingsTab::General => {
             settings_window(app, ui);
-            settings_downloads(ui);
+            settings_downloads(app, ui);
             settings_updates(app, ui);
             settings_section(ui, "Network", None, None, |ui| network(app, ui));
             // Last, as most apps keep it.
@@ -2312,6 +2360,15 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
         setting_row(ui, "Output device", Some("Where the music plays. A picked device that isn't connected leaves it to the system's default until it's back."), |ui| {
             output_device_picker(app, ui);
         });
+        #[cfg(target_os = "windows")]
+        {
+            divider(ui);
+            setting_row(ui, "WASAPI Exclusive Mode", Some("Bypass the Windows audio mixer and resampler for bit-perfect output directly to your DAC. (Requires supported audio hardware)."), |ui| {
+                if toggle(ui, &mut app.wasapi_exclusive, "WASAPI Exclusive Mode").changed() {
+                    app.audio.set_exclusive(app.wasapi_exclusive);
+                }
+            });
+        }
         divider(ui);
         setting_row(ui, "Show music videos", Some("Music videos play as moving video, with their own sound and no lyrics. Turned off while songs play in their place, songs have no Song and Video switch in Now playing; music videos keep theirs."), |ui| {
             let mut on = app.show_video;
@@ -3170,7 +3227,7 @@ fn settings_updates(app: &mut App, ui: &mut Ui) {
 }
 
 /// Settings › Downloads.
-fn settings_downloads(ui: &mut Ui) {
+fn settings_downloads(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Downloads", None, Some("Download songs from their menu, or whole albums and playlists from their page. They're saved at the best quality your account gets, tagged with their cover art, and play from the file, even offline."), |ui| {
         let folder = crate::downloads::folder().display().to_string();
         setting_row(ui, "Download folder", Some(&folder), |ui| {
@@ -3181,6 +3238,14 @@ fn settings_downloads(ui: &mut Ui) {
             if pill(ui, "Open", Some(icon::FOLDER_OPEN), false).clicked() {
                 crate::downloads::open_folder();
             }
+        });
+        divider(ui);
+        setting_row(ui, "Keep Liked Songs downloaded", Some("Automatically download newly liked tracks to offline storage."), |ui| {
+            toggle(ui, &mut app.auto_download_liked, "Keep Liked Songs downloaded");
+        });
+        divider(ui);
+        setting_row(ui, "Keep playlists updated", Some("Automatically detect and download newly added songs when viewing downloaded playlists."), |ui| {
+            toggle(ui, &mut app.auto_update_playlists, "Keep playlists updated");
         });
     });
 }

@@ -64,8 +64,7 @@ impl App {
                     // The queue keeps the last song selected even when its stream has ended.
                     self.discord_finished = Some(generation);
                     if self.sleep_after_track {
-                        self.sleep_after_track = false;
-                        self.sleep_until = None;
+                        self.clear_sleep_timer();
                         self.toast("Sleep timer paused playback");
                     } else if !self.jam.follows() {
                         if self.repeats_one() {
@@ -651,6 +650,11 @@ impl App {
             Resp::StreamStats { generation, stats } => {
                 if generation == self.generation {
                     self.stream_stats = Some((generation, stats));
+                }
+            }
+            Resp::MostReplayed { generation, at_sec } => {
+                if generation == self.generation {
+                    self.most_replayed = Some(at_sec);
                 }
             }
             Resp::UpgradingQuality { generation, active } => {

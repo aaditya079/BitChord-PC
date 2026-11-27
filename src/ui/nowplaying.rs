@@ -1015,13 +1015,42 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
         let fill = theme::lerp_color(Color32::from_white_alpha(163), Color32::from_white_alpha(240), focus);
         ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac, thick)), thick / 2.0, fill);
     }
+    if let Some(best_sec) = app.most_replayed.filter(|&s| s > 0.0 && total > s) {
+        let best_frac = (best_sec / total).clamp(0.0, 1.0);
+        let bx = x0 + w * best_frac;
+        let tick = Rect::from_min_size(pos2(bx - 2.0, bar.top() - 2.0), vec2(4.0, thick + 4.0));
+        let tick_hit = tick.expand2(vec2(4.0, 6.0));
+        let resp = ui.interact(tick_hit, ui.id().with("np_best_part_marker"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("Jump to Best Part ({})", super::fmt_time(best_sec as u32)));
+        if resp.clicked() {
+            app.actions.push(Action::Seek(best_sec));
+            app.toast(format!("Jumped to best part ({})", super::fmt_time(best_sec as u32)));
+        }
+        let tick_col = if resp.hovered() { Color32::from_rgb(255, 230, 80) } else { Color32::from_rgb(245, 190, 40) };
+        ui.painter().rect_filled(tick, 2.0, tick_col);
+    }
     let at = |p: egui::Pos2| (((p.x - x0) / w.max(1.0)).clamp(0.0, 1.0) * total).max(0.0);
     let tc = theme::with_alpha(Color32::WHITE, 0.62);
     let g = widgets::galley(ui, &super::fmt_time(pos as u32), theme::semibold(11.0), tc, 80.0);
     ui.painter().galley(pos2(x0, hit.bottom() + 2.0), g, tc);
-    let left = super::fmt_time((total - pos).max(0.0) as u32);
-    let g = widgets::galley(ui, &format!("-{left}"), theme::semibold(11.0), tc, 80.0);
-    ui.painter().galley(pos2(x0 + w - g.size().x, hit.bottom() + 2.0), g, tc);
+    let right_time = if app.show_total_duration {
+        super::fmt_time(total.max(0.0) as u32)
+    } else {
+        let left = super::fmt_time((total - pos).max(0.0) as u32);
+        format!("-{left}")
+    };
+    let g = widgets::galley(ui, &right_time, theme::semibold(11.0), tc, 80.0);
+    let right_pos = pos2(x0 + w - g.size().x, hit.bottom() + 2.0);
+    let right_rect = Rect::from_min_size(right_pos - vec2(4.0, 2.0), g.size() + vec2(8.0, 4.0));
+    let time_resp = ui.interact(right_rect, ui.id().with("np_time_toggle"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if app.show_total_duration { "Click to show remaining time" } else { "Click to show total length" });
+    if time_resp.clicked() {
+        app.show_total_duration = !app.show_total_duration;
+    }
+    let time_color = if time_resp.hovered() { theme::text() } else { tc };
+    ui.painter().galley(right_pos, g, time_color);
     // The quality mark sits between the two times, as the reference draws it.
     let badge_w = audio_badge_width(ui, app, false);
     if badge_w > 0.0 {
@@ -1456,6 +1485,11 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
         // No Like here: the star under the cover does the liking, and this menu
         // keeps to what a playing song's ⋯ is for.
         widgets::song_actions(ui, track, false, None, &mut app.actions, false);
+        if let Some(best_sec) = app.most_replayed.filter(|&s| s > 0.0) {
+            if widgets::menu_action(ui, Some(theme::icon::SPARKLES), &format!("Jump to best part ({})", super::fmt_time(best_sec as u32))) {
+                app.actions.push(Action::Seek(best_sec));
+            }
+        }
         menu_divider(ui);
         // No "Play next" / "Add to queue" here: the song is already playing, and the
         // loop button on the player bar is the right tool for what comes next. Each
