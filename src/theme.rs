@@ -1003,7 +1003,7 @@ fn linux_fallbacks() -> Vec<(String, Face)> {
     let mut seen: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
     let mut covered = [false; PROBES.len()];
 
-    let mut push_face = |id: String, bytes: &'static [u8], index: u32| {
+    let mut push_face = |id: String, bytes: &'static [u8], index: u32, covered: &mut [bool; PROBES.len()]| {
         if let Ok(font) = skrifa::FontRef::from_index(bytes, index) {
             let cmap = font.charmap();
             for (i, &ch) in PROBES.iter().enumerate() {
@@ -1018,7 +1018,7 @@ fn linux_fallbacks() -> Vec<(String, Face)> {
     for &(path, index) in CANDIDATES {
         if let Some(bytes) = map(path) {
             seen.insert((path.to_owned(), index));
-            push_face(format!("sys:{path}#{index}"), bytes, index);
+            push_face(format!("sys:{path}#{index}"), bytes, index, &mut covered);
         }
     }
     if covered.iter().all(|&c| c) {
@@ -1059,7 +1059,7 @@ fn linux_fallbacks() -> Vec<(String, Face)> {
             let helps = PROBES.iter().enumerate().any(|(i, &ch)| !covered[i] && cmap.map(ch).is_some());
             if helps {
                 seen.insert((p_str.clone(), index));
-                push_face(format!("sys:{p_str}#{index}"), bytes, index);
+                push_face(format!("sys:{p_str}#{index}"), bytes, index, &mut covered);
                 if covered.iter().all(|&c| c) {
                     break;
                 }
