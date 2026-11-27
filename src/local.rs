@@ -145,8 +145,84 @@ pub fn open(id: &str) -> Option<Arc<Shared>> {
     let data = std::fs::read(&entry.path).ok()?;
     let duration_ms = entry.track.duration.map(|s| s as u64 * 1000).unwrap_or(0);
     let ext = entry.path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let info = probe_info(&entry.path, &ext, "Local file", data.len() as u64, duration_ms);
     log::info!("local {}: playing {}", entry.track.title, entry.path.display());
-    Some(Shared::from_bytes_with_format(data, duration_ms, None, Format::File { hint: hint(&ext), mime: None }, None))
+    Some(Shared::from_bytes_with_format(data, duration_ms, None, Format::File { hint: hint(&ext), mime: None }, Some(info)))
+}
+
+/// Probes an audio file's container header to populate `hires::Info` so Now Playing
+/// shows whether a local or downloaded track is lossless or lossy.
+pub(crate) fn probe_info(path: &std::path::Path, ext: &str, source: &str, size: u64, duration_ms: u64) -> crate::hires::Info {
+    use symphonia::core::codecs::{
+        CODEC_TYPE_AAC, CODEC_TYPE_ALAC, CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_OPUS,
+        CODEC_TYPE_VORBIS,
+    };
+    let mut codec = String::new();
+    let mut sample_rate = None;
+    let mut bit_depth = None;
+    let mut channels = None;
+    let mut probed_duration_ms = 0_u64;
+
+    if let Ok(file) = std::fs::File::open(path) {
+        let mss = symphonia::core::io::MediaSourceStream::new(Box::new(file), Default::default());
+        let mut h = symphonia::core::probe::Hint::new();
+        h.with_extension(ext);
+        if let Ok(probed) = symphonia::default::get_probe().format(&h, mss, &Default::default(), &Default::default())
+            && let Some(p) = probed.format.tracks().iter().find(|t| t.codec_params.sample_rate.is_some()).map(|t| &t.codec_params)
+        {
+            sample_rate = p.sample_rate;
+            bit_depth = p.bits_per_sample;
+            channels = p.channels.map(|c| c.count() as u8);
+            if let (Some(frames), Some(base)) = (p.n_frames, p.time_base) {
+                let t = base.calc_time(frames);
+                probed_duration_ms = t.seconds * 1000 + (t.frac * 1000.0).round() as u64;
+            }
+            codec = match p.codec {
+                CODEC_TYPE_FLAC => "FLAC".to_owned(),
+                CODEC_TYPE_ALAC => "ALAC".to_owned(),
+                CODEC_TYPE_MP3 => "MP3".to_owned(),
+                CODEC_TYPE_AAC => "AAC".to_owned(),
+                CODEC_TYPE_OPUS => "Opus".to_owned(),
+                CODEC_TYPE_VORBIS => "Vorbis".to_owned(),
+                _ if matches!(ext, "wav" | "aiff" | "aif") => ext.to_ascii_uppercase(),
+                _ => String::new(),
+            };
+        }
+    }
+    if codec.is_empty() {
+        codec = match ext {
+            "flac" | "alac" | "wav" | "aiff" | "mp3" | "aac" => ext.to_ascii_uppercase(),
+            "aif" => "AIFF".to_owned(),
+            "m4a" | "m4b" | "mp4" => "AAC".to_owned(),
+            "opus" => "Opus".to_owned(),
+            "ogg" | "oga" => "Vorbis".to_owned(),
+            _ => hint(ext).to_ascii_uppercase(),
+        };
+    }
+    let duration_ms = if duration_ms > 0 { duration_ms } else { probed_duration_ms };
+    let is_lossless = matches!(codec.to_ascii_lowercase().as_str(), "flac" | "alac" | "wav" | "aiff");
+    let bitrate_kbps = if is_lossless {
+        match (sample_rate, bit_depth, channels) {
+            (Some(r), Some(b), Some(ch)) if ch > 0 => Some(r * b * ch as u32 / 1000),
+            _ => (duration_ms > 0 && size > 0).then(|| (size * 8 / duration_ms) as u32),
+        }
+    } else {
+        (duration_ms > 0 && size > 0).then(|| (size * 8 / duration_ms) as u32)
+    };
+    let host = path.file_name().and_then(|n| n.to_str()).unwrap_or(source).to_owned();
+    crate::hires::Info {
+        source: source.to_owned(),
+        host,
+        codec,
+        quality: if is_lossless { "LOSSLESS".to_owned() } else { String::new() },
+        bitrate_kbps: bitrate_kbps.filter(|k| *k > 0),
+        sample_rate,
+        bit_depth,
+        channels,
+        atmos: false,
+        size,
+        duration_ms,
+    }
 }
 
 /// Take files in: each is read for its tags and duration (a header's worth of disk
@@ -437,6 +513,53 @@ mod tests {
         assert_eq!(std::fs::read(cover_file(&embedded.id).unwrap()).unwrap(), png, "the picture from the tags");
         let sibling = added.iter().find(|t| t.title == "plain").expect("the untitled one");
         assert_eq!(std::fs::read(cover_file(&sibling.id).unwrap()).unwrap(), jpg, "the folder's own picture");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_info_marks_lossless_and_lossy_local_files() {
+        let dir = std::env::temp_dir().join("bitchord-local-probe-info");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Minimal 16-bit, 44.1 kHz, stereo PCM WAV header + 4 bytes of silence.
+        let mut wav = Vec::with_capacity(48);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&40u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&2u16.to_le_bytes()); // stereo
+        wav.extend_from_slice(&44_100u32.to_le_bytes());
+        wav.extend_from_slice(&(44_100u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(&[0u8; 4]);
+        let wav_path = dir.join("track.wav");
+        std::fs::write(&wav_path, &wav).unwrap();
+
+        let wav_info = probe_info(&wav_path, "wav", "Local file", wav.len() as u64, 1000);
+        assert!(wav_info.lossless());
+        assert_eq!(wav_info.badge(), "Lossless");
+        assert_eq!(wav_info.codec, "WAV");
+        assert_eq!(wav_info.sample_rate, Some(44_100));
+        assert_eq!(wav_info.bit_depth, Some(16));
+        assert_eq!(wav_info.channels, Some(2));
+
+        let mp3_bytes = mp3(None);
+        let mp3_path = dir.join("track.mp3");
+        std::fs::write(&mp3_path, &mp3_bytes).unwrap();
+        let mp3_info = probe_info(&mp3_path, "mp3", "Local file", mp3_bytes.len() as u64, 1000);
+        assert!(!mp3_info.lossless());
+        assert_eq!(mp3_info.codec, "MP3");
+        assert_eq!(mp3_info.badge(), "High");
+
+        let flac_fallback = probe_info(&dir.join("missing.flac"), "flac", "Local file", 10_000_000, 180_000);
+        assert!(flac_fallback.lossless());
+        assert_eq!(flac_fallback.badge(), "Lossless");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
