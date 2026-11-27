@@ -2086,7 +2086,6 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
             settings_artists(app, ui);
         }
         SettingsTab::General => {
-            settings_community(ui);
             settings_window(app, ui);
             settings_downloads(ui);
             settings_updates(app, ui);
@@ -3571,18 +3570,6 @@ fn settings_zoom(ui: &mut Ui) {
     if let Some(z) = pick {
         ui.ctx().set_zoom_factor(z);
     }
-}
-
-/// Settings › General's first card: the project's Discord server — the same place the
-/// update catalogue's news lands first.
-fn settings_community(ui: &mut Ui) {
-    settings_section(ui, "Community", None, None, |ui| {
-        setting_row(ui, "Join the Discord server", Some("Release news as it happens, help with the app, and the talk the project runs on."), |ui| {
-            if pill(ui, "Join server", Some(icon::USERS), true).clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(crate::discord::DISCORD_INVITE));
-            }
-        });
-    });
 }
 
 /// Settings › Window.
