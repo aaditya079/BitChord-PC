@@ -3792,11 +3792,13 @@ mod download_queue_tests {
     fn selections_get_keys_of_their_own_and_workers_are_capped() {
         let mut q = DownloadQueue::default();
         assert_eq!(q.add(None, String::new(), 1, songs(&["1"])).0, "selection-1");
-        assert_eq!(q.add(None, String::new(), 2, songs(&["2", "3"])).0, "selection-2");
-        assert_eq!(q.more_workers(), DOWNLOADS_AT_ONCE.min(3));
+        let extra: Vec<String> = (2..=DOWNLOADS_AT_ONCE + 1).map(|n| n.to_string()).collect();
+        let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+        assert_eq!(q.add(None, String::new(), 2, songs(&extra_refs)).0, "selection-2");
+        assert_eq!(q.more_workers(), DOWNLOADS_AT_ONCE);
         assert_eq!(q.more_workers(), 0);
         while q.next().is_some() {}
-        assert_eq!(q.workers, DOWNLOADS_AT_ONCE.min(3) - 1);
+        assert_eq!(q.workers, DOWNLOADS_AT_ONCE - 1);
     }
 
     #[tokio::test]
