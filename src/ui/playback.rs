@@ -19,6 +19,22 @@ use super::{App, MixFrom, PlayingAs, Repeat, Session, Watched, lyric_prefs};
 const MIX_SWITCH: f32 = 0.65;
 
 impl App {
+    pub(super) fn save_listening(&self) {
+        self.listening.store(self.backend.data_dir(), self.listening_scope.as_deref());
+    }
+
+    pub(super) fn reload_listening(&mut self, logged_in: bool) {
+        let scope = if logged_in {
+            crate::webmusic::Session::load(self.backend.data_dir()).and_then(|s| s.account_scope())
+        } else {
+            None
+        };
+        if scope != self.listening_scope {
+            self.listening_scope = scope;
+            self.listening = crate::listening::Listening::load(self.backend.data_dir(), self.listening_scope.as_deref());
+        }
+    }
+
     pub fn current(&self) -> Option<&Track> {
         self.queue.current()
     }
@@ -248,7 +264,7 @@ impl App {
         if let Some(w) = self.watched.take() {
             let started = w.started.unwrap_or_else(crate::listening::unix_now);
             self.listening.note_left(w.track, started, w.played);
-            self.listening.store(self.backend.data_dir());
+            self.save_listening();
         }
         if let Some(c) = current {
             self.watched = Some(Watched { track: c, started: None, played: 0.0 });

@@ -487,7 +487,11 @@ pub async fn download_behind(http: reqwest::Client, media: Media, ua: String, sh
                                 break;
                             }
                             attempt += 1;
-                            let (delay_ms, is_403) = if is_forbidden(&e) {
+                            let (delay_ms, is_403) = if let Some(delay) = retry_after_from_err(&e) {
+                                let ms = delay.as_millis() as u64;
+                                log::warn!("{what}: rate-limited; honoring Retry-After ({ms} ms, attempt {attempt}/{RETRIES})");
+                                (ms, false)
+                            } else if is_forbidden(&e) {
                                 let ms = (400 * (attempt * attempt) as u64).max(800);
                                 log::warn!("{what}: HTTP 403 Forbidden; retrying with backoff ({ms} ms, attempt {attempt}/{RETRIES})");
                                 (ms, true)
@@ -541,6 +545,21 @@ fn is_forbidden(e: &anyhow::Error) -> bool {
             .and_then(reqwest::Error::status)
             .is_some_and(|s| s == reqwest::StatusCode::FORBIDDEN)
 }
+
+fn retry_after_from_err(e: &anyhow::Error) -> Option<Duration> {
+    e.downcast_ref::<RateLimited>().map(|r| r.0)
+}
+
+#[derive(Debug)]
+struct RateLimited(Duration);
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rate-limited (Retry-After {}s)", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for RateLimited {}
 
 /// `YTM_STREAM_REFUSE`'s answer: what googlevideo says to a range it won't serve.
 #[derive(Debug)]
@@ -598,8 +617,11 @@ async fn fetch(http: &reqwest::Client, url: &str, ua: &str, expect: Option<u64>)
     let mut resp = tokio::time::timeout(STALL, http.get(url).header("User-Agent", ua).send())
         .await
         .map_err(|_| stalled())?
-        .and_then(reqwest::Response::error_for_status)
         .map_err(reqwest::Error::without_url)?;
+    if let Some(delay) = crate::hires::retry_after_delay(resp.headers(), resp.status()) {
+        return Err(anyhow::Error::new(RateLimited(delay)));
+    }
+    resp = resp.error_for_status().map_err(reqwest::Error::without_url)?;
     let mut buf = bytes::BytesMut::with_capacity(expect.or(resp.content_length()).unwrap_or(0) as usize);
     while let Some(chunk) = tokio::time::timeout(STALL, resp.chunk()).await.map_err(|_| stalled())?.map_err(reqwest::Error::without_url)? {
         buf.extend_from_slice(&chunk);
@@ -624,8 +646,11 @@ async fn fetch_range(http: &reqwest::Client, url: &str, ua: &str, a: u64, b: u64
     )
     .await
     .map_err(|_| stalled())?
-    .and_then(reqwest::Response::error_for_status)
     .map_err(reqwest::Error::without_url)?;
+    if let Some(delay) = crate::hires::retry_after_delay(resp.headers(), resp.status()) {
+        return Err(anyhow::Error::new(RateLimited(delay)));
+    }
+    resp = resp.error_for_status().map_err(reqwest::Error::without_url)?;
     let partial = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     let expect = if partial { b - a + 1 } else { total };
     let mut buf = bytes::BytesMut::with_capacity(expect as usize);

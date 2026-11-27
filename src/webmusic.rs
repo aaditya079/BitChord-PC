@@ -142,6 +142,18 @@ impl Session {
         self.cookie.split(';').find_map(|kv| kv.trim().strip_prefix(name)?.strip_prefix('='))
     }
 
+    /// Stable per-account directory/file key derived from the session's `SAPISID` cookie.
+    pub fn account_scope(&self) -> Option<String> {
+        use sha2::Digest;
+        let sid = ["SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"]
+            .into_iter()
+            .find_map(|name| self.get(name))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?;
+        let digest = sha2::Sha256::digest(sid.as_bytes());
+        Some(digest.iter().take(8).map(|b| format!("{b:02x}")).collect())
+    }
+
     /// `SAPISIDHASH` authorization, as the web clients send it.
     fn authorization(&self, origin: &str) -> anyhow::Result<String> {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();

@@ -612,6 +612,7 @@ pub struct App {
     /// What was played, skipped, banned and liked, kept between launches — the
     /// signal Home's local rows and recommendation rows grow from.
     listening: crate::listening::Listening,
+    listening_scope: Option<String>,
     /// The song being watched for its event, and how much of it has actually played
     /// (pauses and buffering don't count), for [`App::watch_listening`].
     watched: Option<Watched>,
@@ -1245,7 +1246,11 @@ impl App {
             skip_streak: 0,
             recoveries: 0,
             autoplay: get("autoplay").is_none_or(|v| v == "1"),
-            listening: crate::listening::Listening::load(&data_dir),
+            listening: {
+                let scope = crate::webmusic::Session::load(&data_dir).and_then(|s| s.account_scope());
+                crate::listening::Listening::load(&data_dir, scope.as_deref())
+            },
+            listening_scope: crate::webmusic::Session::load(&data_dir).and_then(|s| s.account_scope()),
             watched: None,
             watched_frame: 0.0,
             normalize: get("normalize").map_or_else(Default::default, |v| crate::audio::Normalize::from_key(&v)),

@@ -330,6 +330,73 @@ pub fn path(video_id: &str) -> Option<PathBuf> {
     STATE.read().unwrap().index.get(video_id).map(|e| e.path.clone()).filter(|p| p.is_file())
 }
 
+fn norm_match_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for ch in s.chars() {
+        if ch.is_alphanumeric() {
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
+            space = false;
+        } else if !space && !out.is_empty() {
+            out.push(' ');
+            space = true;
+        }
+    }
+    out.trim_end().to_owned()
+}
+
+fn matching_entry_in<'a>(st: &'a State, track: &Track) -> Option<(&'a String, &'a Entry)> {
+    let title = norm_match_text(&track.title);
+    let artist = track.artists.first().map(|a| norm_match_text(&a.name)).unwrap_or_default();
+    if title.is_empty() || artist.is_empty() {
+        return None;
+    }
+    st.index.iter().find(|(id, e)| {
+        if st.gone.contains(*id) {
+            return false;
+        }
+        let Some(s) = e.song.as_ref() else {
+            return false;
+        };
+        if norm_match_text(&s.title) != title {
+            return false;
+        }
+        let e_artist = s.artists.first().map(|a| norm_match_text(&a.name)).unwrap_or_default();
+        if e_artist != artist {
+            return false;
+        }
+        match (track.duration, s.duration) {
+            (Some(a), Some(b)) => a.abs_diff(b) <= 3,
+            _ => true,
+        }
+    })
+}
+
+/// Finds an already-downloaded file for `track` even if the playlist/album row
+/// carries a different YouTube video ID for the same song.
+pub fn matching_path(track: &Track) -> Option<PathBuf> {
+    if let Some(p) = path(&track.id) {
+        return Some(p);
+    }
+    let candidate = {
+        let st = STATE.read().unwrap();
+        matching_entry_in(&st, track).map(|(_, e)| e.path.clone())
+    }?;
+    candidate.is_file().then_some(candidate)
+}
+
+/// Opens an already-downloaded file matching `track` by metadata when `video_id`
+/// itself isn't in the downloads index.
+pub fn open_matching(track: &Track) -> Option<Arc<Shared>> {
+    let id = {
+        let st = STATE.read().unwrap();
+        matching_entry_in(&st, track).map(|(id, _)| id.clone())
+    }?;
+    open(&id)
+}
+
 /// Whether all these songs are downloaded, as last looked (no look at the files now, so
 /// it's quick enough for the UI thread; startup and the Downloads page look).
 /// A music video counts when its song version is.
@@ -339,7 +406,11 @@ pub fn all_listed(tracks: &[Track]) -> bool {
         true => st.index.iter().filter(|(id, _)| !st.gone.contains(*id)).flat_map(|(_, e)| e.stands_for.iter().chain(&e.videos)).map(String::as_str).collect(),
         false => Default::default(),
     };
-    tracks.iter().all(|t| (st.index.contains_key(&t.id) && !st.gone.contains(&t.id)) || (t.music_video && videos.contains(t.id.as_str())))
+    tracks.iter().all(|t| {
+        (st.index.contains_key(&t.id) && !st.gone.contains(&t.id))
+            || (t.music_video && videos.contains(t.id.as_str()))
+            || matching_entry_in(&st, t).is_some()
+    })
 }
 
 /// The downloaded songs still on disk, newest first: the Downloads page. A song
@@ -681,5 +752,50 @@ mod tests {
         assert!(!a.is_file() && !b.is_file());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_entry_matches_same_song_across_video_ids() {
+        let mut st = State {
+            index: HashMap::new(),
+            file: PathBuf::new(),
+            folder: PathBuf::new(),
+            covers: PathBuf::new(),
+            gone: HashSet::new(),
+            saved: Vec::new(),
+        };
+        let track_a = Track {
+            id: "vid_a".into(),
+            title: "Stress Relief".into(),
+            artists: vec![crate::model::Link { id: None, name: "late night drive home".into() }],
+            duration: Some(205),
+            ..Default::default()
+        };
+        st.index.insert("vid_a".into(), Entry {
+            song: Some(track_a),
+            path: PathBuf::from("stress.flac"),
+            duration_ms: 205_000,
+            loudness_db: None,
+            stands_for: None,
+            videos: Vec::new(),
+        });
+
+        let playlist_dup = Track {
+            id: "vid_b".into(),
+            title: "Stress Relief".into(),
+            artists: vec![crate::model::Link { id: None, name: "Late Night Drive Home".into() }],
+            duration: Some(206),
+            ..Default::default()
+        };
+        assert_eq!(matching_entry_in(&st, &playlist_dup).map(|(id, _)| id.as_str()), Some("vid_a"));
+
+        let different_cut = Track {
+            id: "vid_c".into(),
+            title: "Stress Relief (Slowed)".into(),
+            artists: vec![crate::model::Link { id: None, name: "late night drive home".into() }],
+            duration: Some(250),
+            ..Default::default()
+        };
+        assert!(matching_entry_in(&st, &different_cut).is_none());
     }
 }

@@ -18,7 +18,7 @@ use symphonia::core::probe::Hint;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// A rendition bigger than this isn't a song; don't hold it in memory.
 const MAX_BYTES: usize = 96 * 1024 * 1024;
-const PARALLEL: usize = 6;
+const PARALLEL: usize = 3;
 
 pub struct Audio {
     /// Interleaved stereo 16-bit PCM, little-endian.
@@ -78,8 +78,18 @@ pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audi
 }
 
 async fn get(http: &reqwest::Client, url: &str) -> anyhow::Result<bytes::Bytes> {
-    let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?;
-    r.bytes().await.map_err(wire)
+    for attempt in 0..2 {
+        let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?;
+        if let Some(delay) = crate::hires::retry_after_delay(r.headers(), r.status())
+            && attempt == 0
+        {
+            tokio::time::sleep(delay.min(Duration::from_secs(30))).await;
+            continue;
+        }
+        let r = r.error_for_status().map_err(wire)?;
+        return r.bytes().await.map_err(wire);
+    }
+    anyhow::bail!("the rendition download failed")
 }
 
 /// Manifest and segment URLs can carry a token: a failure names its kind, never the

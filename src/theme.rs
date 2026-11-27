@@ -992,6 +992,83 @@ const CANDIDATES: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
 ];
 
+/// Discover Linux system fallback fonts dynamically by checking glyph coverage
+/// across `font_dirs()` rather than relying solely on hardcoded distro paths.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_fallbacks() -> Vec<(String, Face)> {
+    use skrifa::MetadataProvider;
+    use skrifa::attribute::Style;
+    const PROBES: &[char] = &['中', 'あ', '한', 'ع', 'अ', 'ก', '★', '🎵'];
+    let mut out: Vec<(String, Face)> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
+    let mut covered = [false; PROBES.len()];
+
+    let mut push_face = |id: String, bytes: &'static [u8], index: u32| {
+        if let Ok(font) = skrifa::FontRef::from_index(bytes, index) {
+            let cmap = font.charmap();
+            for (i, &ch) in PROBES.iter().enumerate() {
+                if cmap.map(ch).is_some() {
+                    covered[i] = true;
+                }
+            }
+            out.push((id, Face { bytes, index, wght: None }));
+        }
+    };
+
+    for &(path, index) in CANDIDATES {
+        if let Some(bytes) = map(path) {
+            seen.insert((path.to_owned(), index));
+            push_face(format!("sys:{path}#{index}"), bytes, index);
+        }
+    }
+    if covered.iter().all(|&c| c) {
+        return out;
+    }
+
+    let mut files = Vec::new();
+    let mut dirs = font_dirs();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc")) {
+                files.push(path);
+            }
+        }
+    }
+    for path in files {
+        if covered.iter().all(|&c| c) {
+            break;
+        }
+        let Some(p_str) = path.to_str().map(str::to_owned) else { continue };
+        let Some(bytes) = map(&p_str) else { continue };
+        let Ok(fonts) = skrifa::raw::FileRef::new(bytes) else { continue };
+        for (idx, font) in fonts.fonts().enumerate() {
+            let Ok(font) = font else { continue };
+            let attrs = font.attributes();
+            if attrs.style != Style::Normal {
+                continue;
+            }
+            let index = idx as u32;
+            if seen.contains(&(p_str.clone(), index)) {
+                continue;
+            }
+            let cmap = font.charmap();
+            let helps = PROBES.iter().enumerate().any(|(i, &ch)| !covered[i] && cmap.map(ch).is_some());
+            if helps {
+                seen.insert((p_str.clone(), index));
+                push_face(format!("sys:{p_str}#{index}"), bytes, index);
+                if covered.iter().all(|&c| c) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Ascent and line height in em, as egui lays text out (skrifa's metrics: OS/2 typo
 /// values when the font asks for them, else hhea).
 fn em_metrics(bytes: &[u8], index: u32) -> Option<(f32, f32)> {
@@ -1044,6 +1121,12 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
     type Fallbacks = [Vec<(String, Face)>; 3];
     static SYSTEM: std::sync::OnceLock<Fallbacks> = std::sync::OnceLock::new();
     let system = SYSTEM.get_or_init(|| {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let list = linux_fallbacks();
+            [list.clone(), list.clone(), list]
+        }
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
         std::array::from_fn(|w| {
             CANDIDATES
                 .iter()

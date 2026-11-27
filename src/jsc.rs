@@ -8,7 +8,7 @@
 //! burst of solves and give QuickJS's ~20 MB back instead of holding it all session.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{RecvTimeoutError, Sender};
@@ -22,6 +22,8 @@ const CORE: &str = include_str!("../assets/ejs/yt.solver.core.min.js");
 const IDLE: Duration = Duration::from_secs(20);
 /// YouTube rolls out new player versions every few days.
 const PLAYER_TTL: Duration = Duration::from_secs(3600);
+/// Interrupt player JS evaluation if it runs past this deadline (prevents worker deadlocks).
+const JS_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct Player {
@@ -75,12 +77,36 @@ impl Solver {
             Some(sts) if script.exists() => sts,
             _ => {
                 let t = Instant::now();
-                let url = format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
-                let base = http.get(url).send().await?.error_for_status()?.text().await?;
-                let sts = signature_timestamp(&base).ok_or_else(|| anyhow::anyhow!("no signatureTimestamp in player {id}"))?;
-                let (reply, rx) = oneshot::channel();
-                self.send(Job::Preprocess { base, reply })?;
-                let pre = rx.await??;
+                // Try the TV player variant first (matches yt-dlp 2026.11.23+ for newer
+                // revisions like b485e332 where base.js breaks EJS 0.8.0), then fall back
+                // to the standard web player script.
+                let urls = [
+                    format!("https://www.youtube.com/s/player/{id}/tv-player-ias.vflset/tv-player-ias.js"),
+                    format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js"),
+                ];
+                let mut result = Err(anyhow::anyhow!("no player script candidates for {id}"));
+                for url in urls {
+                    let attempt: anyhow::Result<(u32, String)> = async {
+                        let base = http.get(&url).send().await?.error_for_status()?.text().await?;
+                        let sts = signature_timestamp(&base).ok_or_else(|| anyhow::anyhow!("no signatureTimestamp in player {id}"))?;
+                        let (reply, rx) = oneshot::channel();
+                        self.send(Job::Preprocess { base, reply })?;
+                        let pre = rx.await??;
+                        Ok((sts, pre))
+                    }
+                    .await;
+                    match attempt {
+                        Ok(ok) => {
+                            result = Ok(ok);
+                            break;
+                        }
+                        Err(e) => {
+                            log::debug!("player {id} variant {url} failed: {e:#}");
+                            result = Err(e);
+                        }
+                    }
+                }
+                let (sts, pre) = result?;
                 // Keep only the current player: each is ~4 MB.
                 if let Ok(old) = std::fs::read_dir(&self.dir) {
                     for f in old.flatten() {
@@ -136,6 +162,7 @@ impl Solver {
         let (tx, rx) = crossbeam_channel::unbounded();
         std::thread::Builder::new().name("jsc".into()).spawn(move || {
             let mut loaded: Option<(PathBuf, Runtime, Context)> = None;
+            let deadline = Arc::new(Mutex::new(None));
             loop {
                 match rx.recv_timeout(IDLE) {
                     Ok(Job::Preprocess { base, reply }) => {
@@ -144,7 +171,10 @@ impl Solver {
                     Ok(Job::Solve { path, n, sig, reply }) => {
                         if loaded.as_ref().is_none_or(|(p, ..)| *p != path) {
                             loaded = None;
-                            match load(&path) {
+                            *deadline.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + JS_TIMEOUT);
+                            let res = load(&path, deadline.clone());
+                            *deadline.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            match res {
                                 Ok((rt, ctx)) => loaded = Some((path, rt, ctx)),
                                 Err(e) => {
                                     let _ = reply.send(Err(e));
@@ -153,7 +183,14 @@ impl Solver {
                             }
                         }
                         let (.., ctx) = loaded.as_ref().unwrap();
-                        let _ = reply.send(solve(ctx, n, sig));
+                        *deadline.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + JS_TIMEOUT);
+                        let res = solve(ctx, n, sig);
+                        *deadline.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        if res.is_err() {
+                            // Drop potentially wedged or timed-out VM state.
+                            loaded = None;
+                        }
+                        let _ = reply.send(res);
                     }
                     Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return,
                 }
@@ -175,10 +212,17 @@ fn js_err(ctx: &rquickjs::Ctx, e: rquickjs::Error) -> anyhow::Error {
     }
 }
 
+fn install_timeout(rt: &Runtime, deadline: Arc<Mutex<Option<Instant>>>) {
+    rt.set_interrupt_handler(Some(Box::new(move || {
+        deadline.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|d| Instant::now() >= d)
+    })));
+}
+
 /// Parse the player and extract its solver functions into a standalone script.
 fn preprocess(base: &str) -> anyhow::Result<String> {
     let rt = Runtime::new()?;
     rt.set_max_stack_size(64 << 20);
+    install_timeout(&rt, Arc::new(Mutex::new(Some(Instant::now() + JS_TIMEOUT))));
     let ctx = Context::full(&rt)?;
     ctx.with(|ctx| {
         let input = serde_json::json!({"type": "player", "player": base, "output_preprocessed": true, "requests": []});
@@ -189,10 +233,11 @@ fn preprocess(base: &str) -> anyhow::Result<String> {
     })
 }
 
-fn load(path: &Path) -> anyhow::Result<(Runtime, Context)> {
+fn load(path: &Path, deadline: Arc<Mutex<Option<Instant>>>) -> anyhow::Result<(Runtime, Context)> {
     let t = std::time::Instant::now();
     let rt = Runtime::new()?;
     rt.set_max_stack_size(64 << 20);
+    install_timeout(&rt, deadline);
     let ctx = Context::full(&rt)?;
     let cached = path.with_extension("qbc");
     let fresh = match std::fs::read(&cached) {
@@ -213,6 +258,7 @@ fn load(path: &Path) -> anyhow::Result<(Runtime, Context)> {
 fn compile(pre: &str) -> anyhow::Result<Vec<u8>> {
     let rt = Runtime::new()?;
     rt.set_max_stack_size(64 << 20);
+    install_timeout(&rt, Arc::new(Mutex::new(Some(Instant::now() + JS_TIMEOUT))));
     let ctx = Context::full(&rt)?;
     // QuickJS's parser wants a NUL after the source.
     let src = format!("var _r = {{n: null, sig: null}};\n(function (_result) {{\n{pre}\n}})(_r);\n\0");
@@ -293,5 +339,14 @@ mod tests {
         assert_eq!(player_id(r"var a='https:\/\/www.youtube.com\/s\/player\/5203c085\/www-widgetapi.vflset'").as_deref(), Some("5203c085"));
         assert_eq!(signature_timestamp("x={a:1,signatureTimestamp:20732,b:2}"), Some(20732));
         assert_eq!(signature_timestamp("sts:123,sts:20733"), Some(20733));
+    }
+
+    #[test]
+    fn interrupt_handler_stops_infinite_loop() {
+        let rt = Runtime::new().unwrap();
+        install_timeout(&rt, Arc::new(Mutex::new(Some(Instant::now() + Duration::from_millis(50)))));
+        let ctx = Context::full(&rt).unwrap();
+        let res: Result<(), _> = ctx.with(|ctx| ctx.eval::<(), _>("while (true) {}").map_err(|e| js_err(&ctx, e)));
+        assert!(res.is_err());
     }
 }
