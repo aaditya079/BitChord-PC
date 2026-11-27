@@ -634,7 +634,7 @@ pub async fn like_many(api: &ytmapi::Api, ids: Vec<String>, like: bool, mut prog
 
 /// Songs of an album or playlist downloaded at once (each over `stream::WORKERS`
 /// connections, behind the playing song).
-const DOWNLOADS_AT_ONCE: usize = 2;
+const DOWNLOADS_AT_ONCE: usize = 6;
 /// More songs than this to download in one go are asked about first.
 pub const LARGE_DOWNLOAD: usize = 100;
 
@@ -2554,13 +2554,17 @@ impl Backend {
         if reuse_download(&song.id, for_video.clone()).await.is_some() {
             return Ok(false);
         }
-        if !self.download(&song, for_video, true).await?.1 {
+        if !self.download(&song, for_video, false).await?.1 {
             // Saved meanwhile by another download, lyrics and all.
             return Ok(false);
         }
-        // Its lyrics too, for offline: before the next song, so a long run doesn't pile them up.
-        let found = self.lyrics_for(&song).await.sources.len();
-        log::info!("download {}: lyrics from {found} source(s) kept", song.id);
+        // Its lyrics too, for offline: fetch concurrently in the background so the download queue isn't blocked.
+        let this = self.clone();
+        let song_clone = song.clone();
+        tokio::spawn(async move {
+            let found = this.lyrics_for(&song_clone).await.sources.len();
+            log::info!("download {}: lyrics from {found} source(s) kept", song_clone.id);
+        });
         Ok(true)
     }
 
