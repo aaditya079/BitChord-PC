@@ -849,7 +849,34 @@ const RADIO_MIN: usize = 4;
 /// When direct stream is enabled, an external addon needs enough time to complete 1 search
 /// and 1 stream request (typically ~4-6 seconds). We cap it at 7.5 seconds so the listener
 /// isn't kept waiting if the provider is down, while giving legitimate addons time to answer.
-const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(15000);
+const HIRES_WAIT: std::time::Duration = std::time::Duration::from_millis(10000);
+
+async fn first_by_priority<T, F>(futs: Vec<F>) -> Option<(usize, T)>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    use futures_util::StreamExt;
+    let n = futs.len();
+    if n == 0 {
+        return None;
+    }
+    let mut results: Vec<Option<Option<T>>> = (0..n).map(|_| None).collect();
+    let mut pending = futures_util::stream::FuturesUnordered::new();
+    for (idx, fut) in futs.into_iter().enumerate() {
+        pending.push(async move { (idx, fut.await) });
+    }
+    while let Some((idx, res)) = pending.next().await {
+        results[idx] = Some(res);
+        for (i, slot) in results.iter_mut().enumerate() {
+            match slot {
+                None => break,
+                Some(Some(_)) => return slot.take().flatten().map(|v| (i, v)),
+                Some(None) => continue,
+            }
+        }
+    }
+    None
+}
 
 #[derive(Clone)]
 pub struct Backend {
@@ -2566,34 +2593,14 @@ impl Backend {
             && !reverted
             && let Some(track) = track
         {
-            // Snapshotted first: the read guard must not live across the awaits below.
             let sources = self.sources.read().unwrap().clone();
-            for (kind, on) in sources {
-                if !on || kind == MusicSource::Youtube {
-                    continue;
+            let hires_clients = self.hires.read().unwrap().clone();
+            if let Some((kind, source, s)) = self.resolve_sources_parallel(&sources, &hires_clients, track, prefetch, HIRES_WAIT).await {
+                match s.info.as_ref() {
+                    Some(info) => log::info!("{video_id}: {} audio from {}", info.badge(), info.source),
+                    None => log::info!("{video_id}: played from {}", kind.label()),
                 }
-                let started = std::time::Instant::now();
-                let found = match kind {
-                    MusicSource::Addons => {
-                        let sources = self.hires.read().unwrap().clone();
-                        if sources.is_empty() {
-                            continue;
-                        }
-                        tokio::time::timeout(HIRES_WAIT, self.from_hires(&sources, track, prefetch)).await.ok().flatten().map(|s| (Source::HiRes, s))
-                    }
-                    MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                    MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                    MusicSource::JioSaavn => tokio::time::timeout(HIRES_WAIT, self.from_jiosaavn(track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                    MusicSource::Youtube => continue,
-                };
-                if let Some((source, s)) = found {
-                    match s.info.as_ref() {
-                        Some(info) => log::info!("{video_id}: {} audio from {}", info.badge(), info.source),
-                        None => log::info!("{video_id}: played from {} ({:.1}s)", kind.label(), started.elapsed().as_secs_f32()),
-                    }
-                    return Ok((source, s));
-                }
-                log::info!("{video_id}: {} had nothing ({:.1}s)", kind.label(), started.elapsed().as_secs_f32());
+                return Ok((source, s));
             }
         }
         // YouTube, the fallback everything ends at. Downloads always come from here;
@@ -2799,6 +2806,79 @@ impl Backend {
 
     /// The listener's addons, searched together. Atmos leads when the preference is on,
     /// then hi-res/lossless; `None` when none of them has a copy (a miss, not a fault).
+    async fn resolve_sources_parallel(
+        &self,
+        sources: &[(MusicSource, bool)],
+        hires_clients: &[Arc<hires::Client>],
+        track: &Track,
+        prefetch: bool,
+        wait: std::time::Duration,
+    ) -> Option<(MusicSource, Source, ResolvedStream)> {
+        let mut candidates: Vec<(MusicSource, std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Source, ResolvedStream)>> + Send + '_>>)> = Vec::new();
+        for &(kind, on) in sources {
+            if !on || kind == MusicSource::Youtube {
+                continue;
+            }
+            match kind {
+                MusicSource::Addons => {
+                    if hires_clients.is_empty() {
+                        continue;
+                    }
+                    candidates.push((
+                        kind,
+                        Box::pin(async move {
+                            tokio::time::timeout(wait, self.from_hires(hires_clients, track, prefetch))
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|s| (Source::HiRes, s))
+                        }),
+                    ));
+                }
+                MusicSource::MonoServers => {
+                    candidates.push((
+                        kind,
+                        Box::pin(async move {
+                            tokio::time::timeout(wait, self.from_mono(providers::Which::Added, track))
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|s| (Source::Provider, s))
+                        }),
+                    ));
+                }
+                MusicSource::Monochrome => {
+                    candidates.push((
+                        kind,
+                        Box::pin(async move {
+                            tokio::time::timeout(wait, self.from_mono(providers::Which::Builtin, track))
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|s| (Source::Provider, s))
+                        }),
+                    ));
+                }
+                MusicSource::JioSaavn => {
+                    candidates.push((
+                        kind,
+                        Box::pin(async move {
+                            tokio::time::timeout(wait, self.from_jiosaavn(track))
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|s| (Source::Provider, s))
+                        }),
+                    ));
+                }
+                MusicSource::Youtube => continue,
+            }
+        }
+        let kinds: Vec<MusicSource> = candidates.iter().map(|(k, _)| *k).collect();
+        let futs: Vec<_> = candidates.into_iter().map(|(_, f)| f).collect();
+        first_by_priority(futs).await.map(|(idx, (source, stream))| (kinds[idx], source, stream))
+    }
+
     async fn from_hires(&self, sources: &[Arc<hires::Client>], track: &Track, prefetch: bool) -> Option<ResolvedStream> {
         let atmos = self.atmos.load(Ordering::Relaxed);
         let http = self.http();
@@ -3041,44 +3121,12 @@ impl Backend {
         let _guard = UpgradeGuard { backend: self, generation };
 
         let started = std::time::Instant::now();
-        // Each source gets its own `HIRES_WAIT`, the way `resolve` does: a slow addon
-        // shouldn't keep a faster provider from answering, and the song keeps playing
-        // from YouTube while this runs.
-        let mut found: Option<(Source, ResolvedStream)> = None;
-        for (kind, on) in sources {
-            if !on || kind == MusicSource::Youtube {
-                continue;
-            }
-            if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
-                log::debug!("hi-res upgrade for {video_id} dropped: generation changed");
-                return;
-            }
-            if self.reverted.lock().unwrap().contains(&video_id) {
-                log::debug!("hi-res upgrade for {video_id} dropped: reverted to YouTube");
-                return;
-            }
-            let s = match kind {
-                MusicSource::Addons => {
-                    if hires_clients.is_empty() {
-                        continue;
-                    }
-                    tokio::time::timeout(std::time::Duration::from_secs(12), self.from_hires(&hires_clients, &track, false))
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|s| (Source::HiRes, s))
-                }
-                MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::JioSaavn => tokio::time::timeout(HIRES_WAIT, self.from_jiosaavn(&track)).await.ok().flatten().map(|s| (Source::Provider, s)),
-                MusicSource::Youtube => continue,
-            };
-            if let Some(s) = s {
-                found = Some(s);
-                break;
-            }
-            log::info!("{video_id}: {} had nothing ({:.1}s)", kind.label(), started.elapsed().as_secs_f32());
-        }
+        // Query all enabled non-YouTube sources concurrently while returning the
+        // highest-priority match as soon as higher-priority candidates settle.
+        let found = self
+            .resolve_sources_parallel(&sources, &hires_clients, &track, false, HIRES_WAIT)
+            .await
+            .map(|(_, source, s)| (source, s));
         let (source, stream_res) = match found {
             Some(s) => s,
             None => {
@@ -3745,5 +3793,29 @@ mod download_queue_tests {
         assert_eq!(q.more_workers(), 0);
         while q.next().is_some() {}
         assert_eq!(q.workers, DOWNLOADS_AT_ONCE.min(3) - 1);
+    }
+
+    #[tokio::test]
+    async fn first_by_priority_respects_order_and_short_circuits() {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::time::Duration;
+        type Fut = Pin<Box<dyn Future<Output = Option<&'static str>> + Send>>;
+        let slow_low_prio: Fut = Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            Some("low")
+        });
+        let fast_miss_high_prio: Fut = Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            None
+        });
+        let mid_prio: Fut = Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Some("mid")
+        });
+        let started = std::time::Instant::now();
+        let res = super::first_by_priority(vec![fast_miss_high_prio, mid_prio, slow_low_prio]).await;
+        assert_eq!(res, Some((1, "mid")));
+        assert!(started.elapsed() < Duration::from_millis(200), "should not wait for slower lower-priority sources");
     }
 }
