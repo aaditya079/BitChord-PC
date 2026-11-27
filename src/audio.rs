@@ -926,7 +926,12 @@ impl Output {
                 let _ = tx.send(AudioCmd::DeviceLost);
             }
         };
+        // The builder is only reassigned by the exclusive-mode config below, which is
+        // Windows-only, so on other platforms it never needs to be mutable.
+        #[cfg(target_os = "windows")]
         let mut builder = DeviceSinkBuilder::from_device(device.clone());
+        #[cfg(not(target_os = "windows"))]
+        let builder = DeviceSinkBuilder::from_device(device.clone());
         #[cfg(target_os = "windows")]
         if self.exclusive {
             log::info!("audio: configuring exclusive bit-perfect stream for {:?}", id);
