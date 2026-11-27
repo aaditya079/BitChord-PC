@@ -489,8 +489,14 @@ fn add_video(first: &mut Option<String>, videos: &mut Vec<String>, video_id: &st
 pub fn open(video_id: &str) -> Option<Arc<Shared>> {
     let entry = STATE.read().unwrap().index.get(video_id).cloned()?;
     let data = std::fs::read(&entry.path).ok()?;
-    log::info!("{video_id}: playing the downloaded file");
-    Some(Shared::from_bytes(data, entry.duration_ms, entry.loudness_db))
+    log::info!("{video_id}: playing the downloaded file ({})", entry.path.display());
+    let ext = entry.path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let format = match ext.as_str() {
+        "m4a" => crate::stream::Format::Aac,
+        "opus" => crate::stream::Format::Opus,
+        _ => crate::stream::Format::File { hint: crate::local::hint(&ext), mime: None },
+    };
+    Some(Shared::from_bytes_with_format(data, entry.duration_ms, entry.loudness_db, format, None))
 }
 
 /// Write a downloaded song into the folder and remember it. Returns the file.

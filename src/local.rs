@@ -339,7 +339,7 @@ pub fn cover_file(id: &str) -> Option<PathBuf> {
 }
 
 /// The extension as rodio's hint wants it (a file name's worth of format names).
-fn hint(ext: &str) -> &'static str {
+pub fn hint(ext: &str) -> &'static str {
     match ext {
         "m4a" | "m4b" | "mp4" => "m4a",
         "oga" => "ogg",
