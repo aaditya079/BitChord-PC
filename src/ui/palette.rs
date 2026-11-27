@@ -91,7 +91,7 @@ struct Entry {
 
 /// Settings' categories and sections, by their titles. One named as its category opens
 /// that; any other is looked for with Settings' own search.
-const SECTIONS: [(&str, SettingsTab); 32] = {
+const SECTIONS: [(&str, SettingsTab); 31] = {
     use SettingsTab::*;
     [
         ("Account", Account),
@@ -119,7 +119,6 @@ const SECTIONS: [(&str, SettingsTab); 32] = {
         ("Lyrics", Lyrics),
         ("Appearance", Appearance),
         ("Artist pages", Appearance),
-        ("Community", General),
         ("Window", General),
         ("Downloads", General),
         ("Network", General),
