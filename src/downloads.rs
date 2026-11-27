@@ -496,7 +496,8 @@ pub fn open(video_id: &str) -> Option<Arc<Shared>> {
         "opus" => crate::stream::Format::Opus,
         _ => crate::stream::Format::File { hint: crate::local::hint(&ext), mime: None },
     };
-    Some(Shared::from_bytes_with_format(data, entry.duration_ms, entry.loudness_db, format, None))
+    let info = crate::local::probe_info(&entry.path, &ext, "Downloaded", data.len() as u64, entry.duration_ms);
+    Some(Shared::from_bytes_with_format(data, entry.duration_ms, entry.loudness_db, format, Some(info)))
 }
 
 /// Write a downloaded song into the folder and remember it. Returns the file.
