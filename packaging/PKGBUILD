@@ -1,6 +1,6 @@
 # Maintainer: Aaditya Srinivasan <aadityasrinivasan079@gmail.com>
 pkgname=bitchord-pc
-pkgver=2.2.0
+pkgver=2.2.1
 pkgrel=1
 pkgdesc="Native YouTube Music desktop client in Rust"
 arch=('x86_64')

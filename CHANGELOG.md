@@ -2,6 +2,14 @@
 
 All notable changes to **BitChord PC** are documented in this file.
 
+## [2.2.1] - 2026-11-27
+
+### Performance
+- **Parallel Lossless Source Upgrades** (`src/backend.rs`): Resolve and upgrade lossless sources concurrently across priority tiers via `JoinSet`, cutting lossless upgrade latency from ~25–30s down to the fastest tier.
+
+### Fixed
+- Removed the Discord server invite from **Settings** (`src/ui/pages.rs`), the **What's New** dialog (`src/ui/notes.rs`), and the command palette (`src/ui/palette.rs`).
+
 ## [2.2.0] - 2026-11-26
 
 ### Added

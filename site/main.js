@@ -37,9 +37,9 @@
   const heroBtn = document.getElementById("hero-download-btn");
   const heroLabel = document.getElementById("hero-download-label");
 
-  const WIN_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0.exe";
-  const MAC_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-setup-2.2.0-macos-aarch64.dmg";
-  const LINUX_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.0/bitchord-2.2.0-linux-x86_64.tar.gz";
+  const WIN_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.1/bitchord-setup-2.2.1.exe";
+  const MAC_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.1/bitchord-setup-2.2.1-macos-aarch64.dmg";
+  const LINUX_URL = "https://github.com/aaditya079/BitChord-PC/releases/download/v2.2.1/bitchord-2.2.1-linux-x86_64.tar.gz";
 
   if (isMac) {
     if (heroLabel) heroLabel.textContent = "Download for macOS";
