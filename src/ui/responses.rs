@@ -379,7 +379,7 @@ impl App {
             Resp::SeedTaste { history, liked } => {
                 // Only ever once (see `seed_from`); what plays here takes over from here.
                 self.listening.seed_from(history, liked);
-                self.listening.store(self.backend.data_dir());
+                self.save_listening();
                 self.rebuild_home_rows();
             }
             Resp::RecoRows(rows) => self.reco.land(rows),
@@ -518,7 +518,7 @@ impl App {
                         // what autoplay served sits out of recommendations a while, so
                         // the next one doesn't hand it straight back
                         self.listening.note_reco(&tracks);
-                        self.listening.store(self.backend.data_dir());
+                        self.save_listening();
                     }
                 }
                 let was_at_end = self.queue.add_radio(&seed, tracks);
@@ -1046,6 +1046,7 @@ impl App {
         // The last account's: the next launch waits for this one's.
         super::HomeCache::store(self.backend.data_dir(), None);
         self.backend.request(Req::Home(None));
+        self.reload_listening(v);
         if v {
             self.request_library();
             self.request_liked(false);

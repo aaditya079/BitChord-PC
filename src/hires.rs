@@ -151,6 +151,7 @@ impl Health {
 }
 
 /// One playable answer from the addon.
+#[derive(Clone)]
 pub struct Stream {
     pub url: String,
     pub size: u64,
@@ -166,6 +167,7 @@ pub struct Client {
     base: String,
     manifest: tokio::sync::Mutex<Option<Manifest>>,
     searches: tokio::sync::Mutex<SearchCache>,
+    streams: tokio::sync::Mutex<StreamCache>,
     not_mono: AtomicBool,
 }
 
@@ -200,6 +202,37 @@ struct SearchCache {
 }
 
 const SEARCH_CACHE: usize = 64;
+const STREAM_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Default)]
+struct StreamCache {
+    answers: HashMap<(String, bool), (Stream, std::time::Instant)>,
+    order: std::collections::VecDeque<(String, bool)>,
+}
+
+impl StreamCache {
+    fn get(&mut self, key: &(String, bool)) -> Option<Stream> {
+        if let Some((stream, at)) = self.answers.get(key) {
+            if at.elapsed() < STREAM_TTL {
+                return Some(stream.clone());
+            }
+            self.answers.remove(key);
+        }
+        None
+    }
+
+    fn insert(&mut self, key: (String, bool), stream: Stream) {
+        if !self.answers.contains_key(&key) {
+            self.order.push_back(key.clone());
+            while self.order.len() > SEARCH_CACHE {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.answers.remove(&oldest);
+                }
+            }
+        }
+        self.answers.insert(key, (stream, std::time::Instant::now()));
+    }
+}
 
 impl SearchCache {
     fn get(&self, key: &str) -> Option<&Vec<Candidate>> {
@@ -227,7 +260,7 @@ impl Client {
         if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none_or(str::is_empty) {
             return None;
         }
-        Some(Self { base, manifest: Default::default(), searches: Default::default(), not_mono: AtomicBool::new(false) })
+        Some(Self { base, manifest: Default::default(), searches: Default::default(), streams: Default::default(), not_mono: AtomicBool::new(false) })
     }
 
     /// The addon's host, for a log line (the link's path may carry a token).
@@ -330,6 +363,10 @@ impl Client {
     }
 
     async fn stream(&self, http: &reqwest::Client, manifest: &Manifest, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+        let cache_key = (candidate.id.clone(), atmos);
+        if let Some(cached) = self.streams.lock().await.get(&cache_key) {
+            return Ok(Some(cached));
+        }
         let mut params = manifest.defaults.clone();
         params.push(("quality".to_owned(), manifest.quality.clone()));
         if atmos {
@@ -418,7 +455,9 @@ impl Client {
             size,
             duration_ms,
         };
-        Ok(Some(Stream { url: stated_url, size, duration_ms, format, info, data: None }))
+        let stream = Stream { url: stated_url, size, duration_ms, format, info, data: None };
+        self.streams.lock().await.insert(cache_key, stream.clone());
+        Ok(Some(stream))
     }
 
     fn endpoint(&self, segments: &[&str], params: &[(String, String)]) -> anyhow::Result<String> {
@@ -604,21 +643,12 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
 /// than `duration` tolerance off the song is a different cut of it, so the next row is
 /// opened instead.
 async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool, duration: Option<u32>, prefetch: bool) -> anyhow::Result<Option<Stream>> {
-    use futures_util::StreamExt;
     let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
     let mut held: Option<Stream> = None;
     for &round in rounds {
-        // Asked together rather than one after another: an addon resolves a cold lookup in
-        // roughly the time three sequential ones take, and the first good answer ends it.
-        let mut pending = futures_util::stream::FuturesUnordered::new();
+        // Probe sequentially so we don't burst self-hosted addon servers into 429/503.
         for candidate in candidates.iter().filter(|c| !atmos || c.atmos == round).take(STREAM_TRIES) {
-            pending.push(async move { (candidate, client.open(http, candidate, atmos && candidate.atmos, prefetch).await) });
-        }
-        if pending.is_empty() {
-            continue;
-        }
-        while let Some((candidate, found)) = pending.next().await {
-            match found {
+            match client.open(http, candidate, atmos && candidate.atmos, prefetch).await {
                 Ok(Some(s)) if usable(&s) => {
                     if let Some(off) = off_version(s.duration_ms, duration) {
                         log::info!("hi-res: candidate {} of {} is {off} s from the song's length, skipped", candidate.id, client.host());
@@ -1135,7 +1165,33 @@ const VERSION_WORDS: &[&str] = &[
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
+static HOST_BACKOFF: std::sync::LazyLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+pub(crate) fn retry_after_delay(headers: &reqwest::header::HeaderMap, status: reqwest::StatusCode) -> Option<Duration> {
+    if status != reqwest::StatusCode::TOO_MANY_REQUESTS && status != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        return None;
+    }
+    let secs = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(if status == reqwest::StatusCode::TOO_MANY_REQUESTS { 15 } else { 10 })
+        .clamp(1, 120);
+    Some(Duration::from_secs(secs))
+}
+
 async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration) -> anyhow::Result<Value> {
+    let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
+    if !host.is_empty()
+        && let Some(until) = HOST_BACKOFF.lock().unwrap().get(&host).copied()
+    {
+        let now = std::time::Instant::now();
+        if now < until {
+            let secs = (until - now).as_secs().max(1);
+            anyhow::bail!("the addon is rate-limited; cooling down ({secs}s)");
+        }
+    }
     // Twice at most: a refusal is asked again under the release line's agent, which the
     // addon does answer, and a second refusal is the addon's real answer to us.
     for attempt in 0..2 {
@@ -1143,6 +1199,12 @@ async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration) -> anyho
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             anyhow::bail!("not found");
+        }
+        if let Some(delay) = retry_after_delay(response.headers(), status) {
+            if !host.is_empty() {
+                HOST_BACKOFF.lock().unwrap().insert(host.clone(), std::time::Instant::now() + delay);
+            }
+            anyhow::bail!("HTTP {} (rate-limited for {}s)", status.as_u16(), delay.as_secs());
         }
         if !status.is_success() {
             // A refusal of this app's own name: the release line's agent is asked once,

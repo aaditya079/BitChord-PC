@@ -807,9 +807,11 @@ async fn reuse_download(song_id: &str, for_video: Option<String>) -> Option<Path
     tokio::task::spawn_blocking(move || crate::downloads::reuse(&id, for_video.as_deref())).await.ok().flatten()
 }
 
-/// Downloaded already: the song, or a music video's song version.
+/// Downloaded already: the song, a music video's song version, or a matching track.
 pub fn is_downloaded(t: &Track) -> bool {
-    crate::downloads::path(&t.id).is_some() || (t.music_video && crate::downloads::song_for(&t.id).is_some())
+    crate::downloads::path(&t.id).is_some()
+        || (t.music_video && crate::downloads::song_for(&t.id).is_some())
+        || crate::downloads::matching_path(t).is_some()
 }
 
 /// A video id and its stream buffer.
@@ -2378,7 +2380,14 @@ impl Backend {
     /// be fetched and decoded whole is left for the play.
     async fn find_stream(&self, video_id: &str, track: Option<&Track>, prefetch: bool) -> anyhow::Result<Found> {
         let id = video_id.to_owned();
-        if let Some(shared) = tokio::task::spawn_blocking(move || crate::downloads::open(&id).or_else(|| crate::local::open(&id))).await? {
+        let meta = track.cloned();
+        if let Some(shared) = tokio::task::spawn_blocking(move || {
+            crate::downloads::open(&id)
+                .or_else(|| meta.as_ref().and_then(crate::downloads::open_matching))
+                .or_else(|| crate::local::open(&id))
+        })
+        .await?
+        {
             return Ok(Found::Saved(shared));
         }
         // With "play YouTube first" on, the addons are left to the background upgrade
@@ -2445,6 +2454,10 @@ impl Backend {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         };
         if let Some(path) = reuse_download(&t.id, for_video.clone()).await {
+            return Ok((path, false));
+        }
+        let t_match = t.clone();
+        if let Some(path) = tokio::task::spawn_blocking(move || crate::downloads::matching_path(&t_match)).await.ok().flatten() {
             return Ok((path, false));
         }
         let (source, s) = self.resolve(&t.id, true, Some(t), false, false).await?;
@@ -2552,6 +2565,10 @@ impl Backend {
         };
         // Its song is downloaded already: the video plays that file too.
         if reuse_download(&song.id, for_video.clone()).await.is_some() {
+            return Ok(false);
+        }
+        let song_match = song.clone();
+        if tokio::task::spawn_blocking(move || crate::downloads::matching_path(&song_match)).await.ok().flatten().is_some() {
             return Ok(false);
         }
         if !self.download(&song, for_video, false).await?.1 {

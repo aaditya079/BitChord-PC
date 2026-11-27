@@ -8,7 +8,7 @@
 //! is a per-frame sum there, settled the moment the song stops being current.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::Track;
 
@@ -289,10 +289,10 @@ impl Listening {
         self.seeded = true;
     }
 
-    /// Read it from `listening.json` in the data dir; missing or unreadable is an
-    /// empty one (a fresh install, or an older version's file that didn't parse).
-    pub fn load(dir: &Path) -> Self {
-        std::fs::read(dir.join(LISTENING))
+    /// Read from `listening/<scope>.json` when signed in, or `listening.json` otherwise;
+    /// missing or unreadable returns an empty history.
+    pub fn load(dir: &Path, scope: Option<&str>) -> Self {
+        std::fs::read(listening_path(dir, scope))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
@@ -300,11 +300,11 @@ impl Listening {
 
     /// Write it off the UI thread: a later write always lands, and a half-written
     /// file never shows (the `HomeCache::store` dance).
-    pub fn store(&self, dir: &Path) {
+    pub fn store(&self, dir: &Path, scope: Option<&str>) {
         static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
         let n = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let path = dir.join(LISTENING);
+        let path = listening_path(dir, scope);
         let json = serde_json::to_vec(self).unwrap_or_default();
         std::thread::spawn(move || {
             let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -312,6 +312,9 @@ impl Listening {
                 return;
             }
             *written = n;
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             let tmp = path.with_extension("json.tmp");
             let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
         });
@@ -319,6 +322,13 @@ impl Listening {
 }
 
 const LISTENING: &str = "listening.json";
+
+fn listening_path(dir: &Path, scope: Option<&str>) -> PathBuf {
+    match scope.filter(|s| !s.is_empty()) {
+        Some(hash) => dir.join("listening").join(format!("{hash}.json")),
+        None => dir.join(LISTENING),
+    }
+}
 
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -526,5 +536,25 @@ mod tests {
         assert_eq!(summary.unique_artists, 2);
         assert_eq!(summary.top_artists[0].0, "Artist A");
         assert_eq!(summary.top_artists[0].1, 200);
+    }
+
+    #[test]
+    fn scoped_paths_isolate_accounts() {
+        let dir = std::env::temp_dir().join("bitchord-listening-scope-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(listening_path(&dir, None), dir.join("listening.json"));
+        assert_eq!(listening_path(&dir, Some("abc123")), dir.join("listening").join("abc123.json"));
+
+        let mut a = Listening::default();
+        a.note_left(song("s1", "Artist A", Some(200)), at(0.0), 100.0);
+        let p_a = listening_path(&dir, Some("acct_a"));
+        std::fs::create_dir_all(p_a.parent().unwrap()).unwrap();
+        std::fs::write(&p_a, serde_json::to_vec(&a).unwrap()).unwrap();
+
+        assert_eq!(Listening::load(&dir, Some("acct_a")).stats_summary().total_plays, 1);
+        assert_eq!(Listening::load(&dir, Some("acct_b")).stats_summary().total_plays, 0);
+        assert_eq!(Listening::load(&dir, None).stats_summary().total_plays, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

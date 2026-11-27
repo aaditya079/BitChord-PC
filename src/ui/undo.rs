@@ -159,7 +159,7 @@ impl App {
                             liked.insert(i.min(liked.len()), t);
                         }
                     }
-                    self.listening.store(self.backend.data_dir());
+                    self.save_listening();
                 }
                 self.after_put_back(LIKED_MUSIC);
             }
