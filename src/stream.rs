@@ -547,7 +547,15 @@ fn is_forbidden(e: &anyhow::Error) -> bool {
 }
 
 fn retry_after_from_err(e: &anyhow::Error) -> Option<Duration> {
-    e.downcast_ref::<RateLimited>().map(|r| r.0)
+    if let Some(r) = e.downcast_ref::<RateLimited>() {
+        return Some(r.0);
+    }
+    if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
+        if req_err.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
+            return Some(Duration::from_secs(10));
+        }
+    }
+    None
 }
 
 #[derive(Debug)]
