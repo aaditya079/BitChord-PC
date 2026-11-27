@@ -365,20 +365,24 @@ pub mod asus_tuf {
             }
             let handle = SafeHandle(raw_handle);
 
+            let mut out_buf = [0u8; 16];
             let mut returned: u32 = 0;
             let ok = DeviceIoControl(
                 handle.0,
                 IOCTL_ASUS_ATK,
                 Some(packet.as_ptr() as *const _),
                 packet.len() as u32,
-                None,
-                0,
+                Some(out_buf.as_mut_ptr() as *mut _),
+                out_buf.len() as u32,
                 Some(&mut returned),
                 None,
             );
 
             if let Err(err) = ok {
-                log::warn!("lighting: DeviceIoControl on \\\\.\\ATKACPI failed: {err}");
+                static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    log::warn!("lighting: DeviceIoControl on \\\\.\\ATKACPI failed: {err}");
+                }
                 if let Ok(mut diag) = diagnostics().lock() {
                     diag.asus_tuf = format!("DeviceIoControl failed: {err}");
                 }
