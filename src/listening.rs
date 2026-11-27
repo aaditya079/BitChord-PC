@@ -344,13 +344,39 @@ pub struct StatsSummary {
     pub top_artists: Vec<(String, u32, u32)>,
 }
 
+fn year_of(ts: u64) -> u32 {
+    let days = ts / 86400;
+    let mut y = 1970;
+    let mut rem_days = days;
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if rem_days < days_in_year {
+            break y as u32;
+        }
+        rem_days -= days_in_year;
+        y += 1;
+    }
+}
+
 impl Listening {
     pub fn stats_summary(&self) -> StatsSummary {
+        self.stats_summary_filtered(None)
+    }
+
+    pub fn stats_summary_filtered(&self, year: Option<u32>) -> StatsSummary {
         use std::collections::{HashMap, HashSet};
         let mut total_secs: u64 = 0;
         let mut tracks = HashSet::new();
         let mut artists: HashMap<String, (u32, u32)> = HashMap::new();
+        let mut count = 0;
         for ev in &self.events {
+            if let Some(y) = year {
+                if year_of(ev.at) != y {
+                    continue;
+                }
+            }
+            count += 1;
             total_secs += ev.played as u64;
             tracks.insert(ev.track.id.as_str());
             for a in &ev.track.artists {
@@ -366,12 +392,35 @@ impl Listening {
         top_artists.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
         top_artists.truncate(5);
         StatsSummary {
-            total_plays: self.events.len(),
+            total_plays: count,
             total_secs,
             unique_tracks: tracks.len(),
             unique_artists,
             top_artists,
         }
+    }
+
+    /// Exports the listening history events as a formatted JSON string.
+    pub fn export_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string_pretty(&self.events).map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// Imports and merges listening events from a JSON string, avoiding duplicates.
+    /// Returns the number of new events imported.
+    pub fn import_json(&mut self, json_str: &str) -> anyhow::Result<usize> {
+        let imported: Vec<Event> = serde_json::from_str(json_str)?;
+        let mut existing_keys: std::collections::HashSet<(String, u64)> = self.events.iter().map(|e| (e.track.id.clone(), e.at)).collect();
+        let mut added = 0;
+        for ev in imported {
+            if existing_keys.insert((ev.track.id.clone(), ev.at)) {
+                self.events.push_back(ev);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.events.make_contiguous().sort_by_key(|e| e.at);
+        }
+        Ok(added)
     }
 }
 

@@ -3,7 +3,7 @@
 use egui::{Color32, Ui};
 
 use crate::backend::Req;
-use crate::model::Target;
+use crate::model::{Target, Track};
 use crate::theme;
 
 use super::{Action, App, Dialog, notes, pages, widgets};
@@ -65,6 +65,7 @@ impl App {
             Dialog::ConfirmRemoveDownloads => "Remove all downloads",
             Dialog::ConfirmDownload { .. } => "Download",
             Dialog::Collaborate { .. } => "Collaborate",
+            Dialog::SongCredits(_) => "Song credits",
         };
         // The same modal card as "Delete playlist?" and the update dialog.
         let modal = egui::Modal::new(egui::Id::unique("playlist-dialog")).frame(notes::surface()).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
@@ -139,6 +140,7 @@ impl App {
                         done = ok || cancel;
                     }
                     Dialog::Collaborate { info, busy, confirm_off, .. } => done = self.collaborate_dialog(ui, info, busy, confirm_off, accent),
+                    Dialog::SongCredits(t) => done = self.song_credits_dialog(ui, t, accent),
                     Dialog::ConfirmDelete { .. } | Dialog::ConfirmClearCache | Dialog::ConfirmRemoveDownloads => unreachable!("drawn by confirm"),
                 }
             });
@@ -220,6 +222,68 @@ impl App {
             self.backend.request(Req::SetCollaboration { info: c, change });
         }
         false
+    }
+
+    fn song_credits_dialog(&mut self, ui: &mut Ui, t: &Track, accent: Color32) -> bool {
+        let is_current = self.current_id() == Some(&t.id);
+        let quality_str = if is_current {
+            self.audio_info.as_ref().map(|(_, info)| info.badge().to_owned())
+        } else if let Some(path) = crate::downloads::path(&t.id) {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("m4a");
+            Some(crate::local::probe_info(&path, ext, "Downloaded", 0, t.duration.unwrap_or(0) as u64 * 1000).badge().to_owned())
+        } else if let Some(path) = crate::local::path(&t.id) {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp3");
+            Some(crate::local::probe_info(&path, ext, "Local file", 0, t.duration.unwrap_or(0) as u64 * 1000).badge().to_owned())
+        } else {
+            None
+        };
+
+        egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+            field_label(ui, "Title");
+            ui.label(egui::RichText::new(&t.title).font(theme::bold(15.0)).color(theme::text()));
+            ui.add_space(12.0);
+
+            field_label(ui, "Artists");
+            let artists = if t.artists.is_empty() {
+                "Unknown Artist".to_owned()
+            } else {
+                t.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+            };
+            ui.label(egui::RichText::new(artists).font(theme::regular(14.0)).color(theme::text_dim()));
+            ui.add_space(12.0);
+
+            if let Some(album) = &t.album {
+                field_label(ui, "Album");
+                ui.label(egui::RichText::new(&album.name).font(theme::regular(14.0)).color(theme::text_dim()));
+                ui.add_space(12.0);
+            }
+
+            if let Some(nr) = t.track_nr {
+                field_label(ui, "Track Number");
+                ui.label(egui::RichText::new(format!("#{nr}")).font(theme::regular(14.0)).color(theme::text_dim()));
+                ui.add_space(12.0);
+            }
+
+            if let Some(dur) = t.duration {
+                field_label(ui, "Duration");
+                ui.label(egui::RichText::new(super::fmt_time(dur)).font(theme::regular(14.0)).color(theme::text_dim()));
+                ui.add_space(12.0);
+            }
+
+            if let Some(q) = quality_str {
+                field_label(ui, "Audio Quality");
+                ui.label(egui::RichText::new(q).font(theme::bold(13.5)).color(accent));
+                ui.add_space(12.0);
+            }
+
+            if !crate::local::is_local(&t.id) {
+                field_label(ui, "YouTube ID");
+                ui.label(egui::RichText::new(&t.id).font(theme::regular(12.0)).color(theme::text_faint()));
+                ui.add_space(12.0);
+            }
+        });
+        ui.add_space(20.0);
+        done_button(ui)
     }
 }
 

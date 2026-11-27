@@ -207,6 +207,8 @@ pub enum Action {
     TransferPick(Track),
     /// Keep this song out of what Home grows from what you play (see `listening`).
     NotRecommended(Track),
+    /// Song credits modal displaying metadata and codec info.
+    SongCredits(Track),
 }
 
 enum Dialog {
@@ -223,6 +225,8 @@ enum Dialog {
     /// `info` until it loads; `busy` while a change is on its way; `confirm_off` asks
     /// before turning collaboration off (that removes the collaborators).
     Collaborate { id: String, info: Option<crate::ytm::Collaboration>, busy: bool, confirm_off: bool },
+    /// Song metadata, contributors, and audio specs.
+    SongCredits(Track),
 }
 
 /// Songs picked in a list for a batch action: Ctrl-click toggles one, Shift-click a range,
@@ -906,6 +910,22 @@ pub struct App {
     pub auto_update: bool,
     pub sleep_until: Option<std::time::Instant>,
     pub sleep_after_track: bool,
+    sleep_fade_start_volume: Option<f32>,
+    /// Show total track duration instead of remaining time on Now Playing scrubber.
+    pub show_total_duration: bool,
+    /// Automatically download liked songs to offline storage.
+    pub auto_download_liked: bool,
+    /// Automatically download newly added tracks when opening downloaded playlists.
+    pub auto_update_playlists: bool,
+    pub auto_synced_playlists: std::collections::HashSet<String>,
+    /// Filter search results to local tracks and downloaded music only.
+    pub search_in_library: bool,
+    /// Use Windows WASAPI exclusive bit-perfect audio mode.
+    pub wasapi_exclusive: bool,
+    /// Peak replay timestamp (seconds) for current song heatmap.
+    pub most_replayed: Option<f32>,
+    /// Filter year for listening recap/replay stats.
+    pub replay_year: Option<u32>,
     /// Updates from the nightly channel rather than stable.
     update_nightly: bool,
     /// When the last automatic update check ran (app time, s).
@@ -1304,6 +1324,15 @@ impl App {
             auto_update: get("auto_update").is_none_or(|v| v == "1"),
             sleep_until: None,
             sleep_after_track: false,
+            sleep_fade_start_volume: None,
+            show_total_duration: get("show_total_duration").is_some_and(|v| v == "1"),
+            auto_download_liked: get("auto_download_liked").is_some_and(|v| v == "1"),
+            auto_update_playlists: get("auto_update_playlists").is_some_and(|v| v == "1"),
+            auto_synced_playlists: Default::default(),
+            search_in_library: false,
+            wasapi_exclusive: get("wasapi_exclusive").is_some_and(|v| v == "1"),
+            most_replayed: None,
+            replay_year: None,
             // A nightly build stays on nightlies until told otherwise.
             update_nightly: get("update_channel").map_or_else(|| crate::update::is_nightly(&crate::update::build_version()), |v| v == "nightly"),
             update_announced: false,
@@ -1561,9 +1590,28 @@ impl App {
         }
         app.rebuild_home_rows();
         app.audio.set_normalize(app.normalize);
+        if app.wasapi_exclusive {
+            app.audio.set_exclusive(true);
+        }
         app.set_crossfade();
         app.set_eq();
         app
+    }
+
+    pub fn clear_sleep_timer(&mut self) {
+        self.sleep_until = None;
+        self.sleep_after_track = false;
+        if let Some(orig) = self.sleep_fade_start_volume.take() {
+            self.audio.set_volume(orig);
+        }
+    }
+
+    pub fn set_sleep_timer(&mut self, duration: std::time::Duration) {
+        if let Some(orig) = self.sleep_fade_start_volume.take() {
+            self.audio.set_volume(orig);
+        }
+        self.sleep_until = Some(std::time::Instant::now() + duration);
+        self.sleep_after_track = false;
     }
 
     // ---------------------------------------------------------------- navigation
@@ -2242,15 +2290,31 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if let Some(until) = self.sleep_until
-            && std::time::Instant::now() >= until
-        {
-            self.sleep_until = None;
-            self.sleep_after_track = false;
-            if self.playing() {
-                self.toggle();
+        if let Some(until) = self.sleep_until {
+            let now = std::time::Instant::now();
+            if now >= until {
+                self.sleep_until = None;
+                self.sleep_after_track = false;
+                if let Some(orig) = self.sleep_fade_start_volume.take() {
+                    self.audio.set_volume(orig);
+                }
+                if self.playing() {
+                    self.toggle();
+                }
+                self.toast("Sleep timer paused playback");
+            } else {
+                let remaining = until.duration_since(now).as_secs_f32();
+                if remaining <= 30.0 {
+                    if self.sleep_fade_start_volume.is_none() {
+                        self.sleep_fade_start_volume = Some(self.audio.volume());
+                    }
+                    if let Some(orig) = self.sleep_fade_start_volume {
+                        let factor = (remaining / 30.0).clamp(0.0, 1.0);
+                        self.audio.set_volume(orig * factor);
+                        ui.ctx().request_repaint();
+                    }
+                }
             }
-            self.toast("Sleep timer paused playback");
         }
         if self.playing() {
             crate::lighting::sync_music_rgb(self.accent, self.audio.status.level());
@@ -2530,6 +2594,10 @@ impl eframe::App for App {
         storage.set_string("podcasts", b(self.show_podcasts));
         storage.set_string("comments", b(self.show_comments));
         storage.set_string("restricted_mode", b(self.restricted_mode));
+        storage.set_string("show_total_duration", b(self.show_total_duration));
+        storage.set_string("auto_download_liked", b(self.auto_download_liked));
+        storage.set_string("auto_update_playlists", b(self.auto_update_playlists));
+        storage.set_string("wasapi_exclusive", b(self.wasapi_exclusive));
         let folder = crate::downloads::folder();
         storage.set_string("download_dir", if folder == crate::downloads::default_folder() { String::new() } else { folder.display().to_string() });
         let (device, device_name) = self.output_device.clone().unzip();

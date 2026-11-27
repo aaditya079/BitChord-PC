@@ -394,7 +394,7 @@ impl Session {
             pairs.push((sp, sig));
         }
         url.query_pairs_mut().clear().extend_pairs(pairs);
-        Ok(Audio::YouTube(Stream { url: url.into(), size, duration_ms, loudness_db, opus: is_opus(f) }))
+        Ok(Audio::YouTube(Stream { url: url.into(), size, duration_ms, loudness_db, opus: is_opus(f), most_replayed: None }))
     }
 }
 
@@ -454,7 +454,7 @@ pub async fn audio_stream_anon(http: &reqwest::Client, solver: &Solver, video_id
         pairs.push((sp, sig));
     }
     url.query_pairs_mut().clear().extend_pairs(pairs);
-    Ok(Audio::YouTube(Stream { url: url.into(), size, duration_ms, loudness_db, opus: is_opus(f) }))
+    Ok(Audio::YouTube(Stream { url: url.into(), size, duration_ms, loudness_db, opus: is_opus(f), most_replayed: None }))
 }
 
 pub enum Audio {

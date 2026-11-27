@@ -350,6 +350,9 @@ impl App {
                     self.play_current_at(at, false);
                 }
             }
+            Action::SongCredits(track) => {
+                self.dialog = Some(Dialog::SongCredits(track));
+            }
         }
     }
 
