@@ -212,6 +212,7 @@ jobs:
     needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
         with:
           path: files
@@ -229,9 +230,17 @@ jobs:
             TAG=$(gh release list --limit 1 | awk '{print $1}')
           fi
           echo "Target tag: $TAG"
+          NOTES=$(awk -v ver="${TAG#v}" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d')
+          if [ -z "$NOTES" ]; then
+            NOTES="Automated release build."
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" files/* --clobber
-            gh release edit "$TAG" --draft=false --latest
+            gh release edit "$TAG" --draft=false --latest --notes "$NOTES"
           else
-            gh release create "$TAG" files/* --title "bitchord ${TAG#v}" --notes "Automated release build."
+            gh release create "$TAG" files/* --title "bitchord ${TAG#v}" --notes "$NOTES"
           fi
