@@ -1210,10 +1210,6 @@ pub fn dialog(app: &mut App, ctx: &egui::Context) {
                 } else {
                     close = widgets::pill(ui, "Close", None, true).clicked();
                 }
-                // Where the news lands first, beside whatever else the bar offers.
-                if widgets::pill(ui, "Join the Discord server", Some(icon::USERS), false).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(crate::discord::DISCORD_INVITE));
-                }
             });
         });
     });
