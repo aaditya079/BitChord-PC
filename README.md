@@ -31,6 +31,7 @@ BitChord PC builds on open-source work from:
 
 - **[grapedjuice/ytm-rs](https://github.com/grapedjuice/ytm-rs)** — Original native Rust YouTube Music desktop client (`egui` + `rodio` engine) forming the core player architecture. Full credit to grapedjuice and all upstream `ytm-rs` contributors.
 - **[jackychan4891/BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued)** — Desktop continuation and feature ports.
+- **[LoserDenji/Bitchord-Desktop-Revived](https://github.com/LoserDenji/Bitchord-Desktop-Revived)** — Community desktop continuation, streaming fixes, and UI/feature enhancements.
 - **[kushagrasinghx/BitChord](https://github.com/kushagrasinghx/BitChord)** — Visual identity and UX inspiration.
 - **[egui](https://github.com/emilk/egui)** — Immediate-mode GUI for Rust.
 - **[rodio](https://github.com/RustAudio/rodio) & [Symphonia](https://github.com/pdeljanov/Symphonia)** — Native audio decoding, mixing, and playback.
