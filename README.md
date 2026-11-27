@@ -11,7 +11,7 @@
 
   <p>
     <a href="https://github.com/aaditya079/BitChord-PC/releases/latest">Download</a> ·
-    <a href="https://aaditya079.github.io/BitChord-PC/">Website</a> ·
+    <a href="https://app.bitchord-pc.workers.dev/">Website</a> ·
     <a href="#features">Features</a> ·
     <a href="#installation">Installation</a> ·
     <a href="#performance-benchmarks">Benchmarks</a> ·
